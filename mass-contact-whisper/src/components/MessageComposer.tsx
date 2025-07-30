@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
-import { Send, Upload, X, MessageSquare, Eye, Plus, Trash2 } from 'lucide-react';
+import { Send, Upload, X, MessageSquare, Eye, Plus, Trash2, ArrowRight } from 'lucide-react';
 import { generateId } from '@/lib/utils';
 import { ChatStorageService } from '@/lib/chatStorage';
 import { uploadImages } from '@/lib/cloudinary';
@@ -19,23 +19,36 @@ interface Part {
   number?: string;
 }
 
+interface MessageData {
+  messageTitle: string;
+  make: string;
+  model: string;
+  year: string;
+  vin: string;
+  additionalDetails: string;
+  parts: Part[];
+  imageFiles: File[];
+  imagePreviews: string[];
+  uploadedImageUrls: string[];
+}
+
 interface MessageComposerProps {
   filteredContacts: Contact[];
   onSendComplete: (bulkMessageId: string) => void;
   onSendStart: () => void;
+  messageData: MessageData;
+  onMessageDataChange: (newData: Partial<MessageData>) => void;
+  onNextStage?: () => void;
 }
 
-export function MessageComposer({ filteredContacts, onSendComplete, onSendStart }: MessageComposerProps) {
-  const [messageTitle, setMessageTitle] = useState('');
-  const [make, setMake] = useState('');
-  const [model, setModel] = useState('');
-  const [year, setYear] = useState('');
-  const [vin, setVin] = useState('');
-  const [additionalDetails, setAdditionalDetails] = useState('');
-  const [parts, setParts] = useState<Part[]>([{ id: generateId(), qty: '', name: '', number: '' }]);
-  const [imageFiles, setImageFiles] = useState<File[]>([]);
-  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
-  const [uploadedImageUrls, setUploadedImageUrls] = useState<string[]>([]);
+export function MessageComposer({ 
+  filteredContacts, 
+  onSendComplete, 
+  onSendStart,
+  messageData,
+  onMessageDataChange,
+  onNextStage
+}: MessageComposerProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [sendProgress, setSendProgress] = useState(0);
@@ -45,54 +58,94 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
+    console.log('File upload triggered, files:', files);
+    
     if (files) {
-      const newFiles: File[] = [];
-      const newPreviews: string[] = [];
+      console.log('Number of files selected:', files.length);
+      const validFiles = Array.from(files).filter(file => file.type.startsWith('image/'));
+      console.log('Valid image files:', validFiles.length);
 
-      Array.from(files).forEach(file => {
-        if (file.type.startsWith('image/')) {
-          newFiles.push(file);
+      if (validFiles.length === 0) {
+        toast({
+          title: "No valid images",
+          description: "Please select valid image files (JPG, PNG, WEBP, HEIC)",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Update files immediately
+      onMessageDataChange({
+        imageFiles: [...messageData.imageFiles, ...validFiles],
+        uploadedImageUrls: [] // Clear any previously uploaded URLs
+      });
+
+      console.log('Processing previews for', validFiles.length, 'files');
+
+      // Process all previews and update state once all are complete
+      const previewPromises = validFiles.map(file => {
+        return new Promise<string>((resolve) => {
           const reader = new FileReader();
           reader.onloadend = () => {
             const result = reader.result;
             if (result && typeof result === 'string') {
-              setImagePreviews(prev => [...prev, result]);
+              resolve(result);
+            } else {
+              resolve('');
             }
           };
           reader.readAsDataURL(file);
-        }
+        });
       });
 
-      setImageFiles(prev => [...prev, ...newFiles]);
-      setUploadedImageUrls([]); // Clear any previously uploaded URLs
+      Promise.all(previewPromises).then(previews => {
+        const validPreviews = previews.filter(preview => preview !== '');
+        console.log('Generated previews:', validPreviews.length);
+        onMessageDataChange({
+          imagePreviews: [...messageData.imagePreviews, ...validPreviews]
+        });
+        
+        // Reset the file input to allow for additional selections
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      });
     }
   };
 
   const addPart = () => {
-    setParts([...parts, { id: generateId(), qty: '', name: '', number: '' }]);
+    onMessageDataChange({
+      parts: [...messageData.parts, { id: generateId(), qty: '', name: '', number: '' }]
+    });
   };
 
   const removePart = (id: string) => {
-    setParts(parts.filter(part => part.id !== id));
+    onMessageDataChange({
+      parts: messageData.parts.filter(part => part.id !== id)
+    });
   };
 
   const updatePart = (id: string, field: keyof Part, value: string) => {
-    setParts(parts.map(part => 
-      part.id === id ? { ...part, [field]: value } : part
-    ));
+    onMessageDataChange({
+      parts: messageData.parts.map(part => 
+        part.id === id ? { ...part, [field]: value } : part
+      )
+    });
   };
 
   const removeImage = (index: number) => {
-    setImageFiles(imageFiles.filter((_, i) => i !== index));
-    setImagePreviews(imagePreviews.filter((_, i) => i !== index));
-    setUploadedImageUrls([]);
+    onMessageDataChange({
+      imageFiles: messageData.imageFiles.filter((_, i) => i !== index),
+      imagePreviews: messageData.imagePreviews.filter((_, i) => i !== index),
+      uploadedImageUrls: []
+    });
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
   const uploadSelectedImages = async () => {
-    if (imageFiles.length === 0) {
+    if (messageData.imageFiles.length === 0) {
       toast({
         title: "No images selected",
         description: "Please select images to upload first",
@@ -103,21 +156,21 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
 
     setIsUploading(true);
     try {
-      const result = await uploadImages(imageFiles);
+      const result = await uploadImages(messageData.imageFiles);
       
       // Store the message text
-      if (messageTitle.trim()) {
+      if (messageData.messageTitle.trim()) {
         await fetch(`/api/gallery/${result.timestamp}/message`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ message: messageTitle.trim() })
+          body: JSON.stringify({ message: messageData.messageTitle.trim() })
         });
       }
 
       const galleryUrl = `${window.location.origin}/gallery/${result.timestamp}`;
-      setUploadedImageUrls([galleryUrl]);
+      onMessageDataChange({ uploadedImageUrls: [galleryUrl] });
       
       toast({
         title: "Upload successful",
@@ -136,22 +189,22 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
   };
 
   const getFinalMessage = () => {
-    let message = `> Part Request - ${make} ${model} ${year}\n`;
-    message += `_VIN: ${vin}_\n\n`;
+    let message = `> Part Request - ${messageData.make} ${messageData.model} ${messageData.year}\n`;
+    message += `_VIN: ${messageData.vin}_\n\n`;
     
     // Add parts
-    parts.forEach(part => {
+    messageData.parts.forEach(part => {
       message += `${part.qty} - ${part.name}${part.number ? ` - ${part.number}` : ''}\n`;
     });
 
     // Add additional details if present
-    if (additionalDetails.trim()) {
-      message += `\n${additionalDetails.trim()}\n`;
+    if (messageData.additionalDetails.trim()) {
+      message += `\n${messageData.additionalDetails.trim()}\n`;
     }
 
-    if (uploadedImageUrls.length > 0) {
+    if (messageData.uploadedImageUrls.length > 0) {
       message += '\nPHOTOS HERE:\n';
-      message += uploadedImageUrls[0];
+      message += messageData.uploadedImageUrls[0];
     }
 
     return message;
@@ -167,7 +220,7 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
       return;
     }
 
-    if (imageFiles.length > 0 && uploadedImageUrls.length === 0) {
+    if (messageData.imageFiles.length > 0 && messageData.uploadedImageUrls.length === 0) {
       toast({
         title: "Images not uploaded",
         description: "Please upload your selected images before sending",
@@ -176,7 +229,7 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
       return;
     }
 
-    if (!messageTitle.trim()) {
+    if (!messageData.messageTitle.trim()) {
       toast({
         title: "No title",
         description: "Please enter a title for this message campaign",
@@ -253,7 +306,7 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
       
       try {
         const savedBulkMessage = ChatStorageService.saveBulkMessage({
-          title: messageTitle,
+          title: messageData.messageTitle,
           content: getFinalMessage(),
           recipients: filteredContacts.map(contact => contact.whatsappNumber),
           sentAt: new Date().toISOString(),
@@ -289,10 +342,13 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
   };
 
   const isFormValid = () => {
-    if (!make || !model || !year || !vin) return false;
-    if (parts.length === 0) return false;
-    if (parts.some(part => !part.qty || !part.name)) return false;
-    return true;
+    return (
+      messageData.make.trim() !== '' &&
+      messageData.model.trim() !== '' &&
+      messageData.parts.length > 0 &&
+      messageData.parts.every(part => part.name.trim() !== '' && part.qty.trim() !== '') &&
+      messageData.uploadedImageUrls.length > 0 // Require at least one uploaded image
+    );
   };
 
   return (
@@ -310,8 +366,8 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
           <Input
             id="messageTitle"
             placeholder="Enter a descriptive title for this request..."
-            value={messageTitle}
-            onChange={(e) => setMessageTitle(e.target.value)}
+            value={messageData.messageTitle}
+            onChange={(e) => onMessageDataChange({ messageTitle: e.target.value })}
             disabled={isSending}
             required
           />
@@ -326,8 +382,8 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
               <Input
                 id="make"
                 placeholder="Select or type car make"
-                value={make}
-                onChange={(e) => setMake(e.target.value)}
+                value={messageData.make}
+                onChange={(e) => onMessageDataChange({ make: e.target.value })}
                 disabled={isSending}
                 required
               />
@@ -337,8 +393,8 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
               <Input
                 id="model"
                 placeholder="e.g., Camry, X5, Mustang"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
+                value={messageData.model}
+                onChange={(e) => onMessageDataChange({ model: e.target.value })}
                 disabled={isSending}
                 required
               />
@@ -351,8 +407,8 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
               <Input
                 id="year"
                 placeholder="2025"
-                value={year}
-                onChange={(e) => setYear(e.target.value)}
+                value={messageData.year}
+                onChange={(e) => onMessageDataChange({ year: e.target.value })}
                 disabled={isSending}
                 required
               />
@@ -362,8 +418,8 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
               <Input
                 id="vin"
                 placeholder="17-character VIN"
-                value={vin}
-                onChange={(e) => setVin(e.target.value)}
+                value={messageData.vin}
+                onChange={(e) => onMessageDataChange({ vin: e.target.value })}
                 disabled={isSending}
               />
             </div>
@@ -386,7 +442,7 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
             </Button>
           </div>
           
-          {parts.map((part, index) => (
+          {messageData.parts.map((part, index) => (
             <div key={part.id} className="space-y-4 p-4 border rounded-lg">
               <div className="space-y-2">
                 <Label htmlFor={`part-name-${index}`} className="text-sm font-medium">Part Name *</Label>
@@ -426,7 +482,7 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
                 </div>
               </div>
 
-              {parts.length > 1 && (
+              {messageData.parts.length > 1 && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -447,8 +503,8 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
           <h3 className="text-lg font-medium">Additional Details (Optional)</h3>
           <Textarea
             placeholder="Any specific requirements, brand preferences, or additional information..."
-            value={additionalDetails}
-            onChange={(e) => setAdditionalDetails(e.target.value)}
+            value={messageData.additionalDetails}
+            onChange={(e) => onMessageDataChange({ additionalDetails: e.target.value })}
             disabled={isSending}
             className="min-h-[100px]"
           />
@@ -479,13 +535,13 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
                   <Upload className="h-5 w-5" />
                   Select reference images
                 </Button>
-                <p className="text-sm text-gray-500 mt-2">JPG, PNG, WEBP, HEIC (Max 5MB each)</p>
+                <p className="text-sm text-gray-500 mt-2">JPG, PNG, WEBP, HEIC (Max 5MB each) - You can select multiple files at once</p>
               </div>
 
-              {imagePreviews.length > 0 && (
+              {messageData.imagePreviews.length > 0 && (
                 <>
                   <div className="grid grid-cols-4 gap-4 pt-4 border-t">
-                    {imagePreviews.map((preview, index) => (
+                    {messageData.imagePreviews.map((preview, index) => (
                       <div key={index} className="relative group">
                         <img
                           src={preview}
@@ -502,7 +558,7 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
                             <X className="h-4 w-4" />
                           </Button>
                         </div>
-                        {uploadedImageUrls.length > 0 && (
+                        {messageData.uploadedImageUrls.length > 0 && (
                           <div className="absolute bottom-0 left-0 right-0 bg-green-500 bg-opacity-80 text-white text-xs p-1 text-center rounded-b-md">
                             Uploaded ✓
                           </div>
@@ -513,16 +569,16 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
 
                   <div className="flex items-center justify-between pt-4 border-t">
                     <p className="text-sm text-gray-600">
-                      {imageFiles.length} image{imageFiles.length !== 1 ? 's' : ''} selected
+                      {messageData.imageFiles.length} image{messageData.imageFiles.length !== 1 ? 's' : ''} selected
                     </p>
                     <Button
                       variant="default"
                       onClick={uploadSelectedImages}
-                      disabled={isSending || isUploading || uploadedImageUrls.length > 0}
+                      disabled={isSending || isUploading || messageData.uploadedImageUrls.length > 0}
                       className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2"
                     >
                       <Upload className="h-4 w-4" />
-                      {isUploading ? 'Uploading...' : uploadedImageUrls.length > 0 ? 'Uploaded' : 'Create Gallery'}
+                      {isUploading ? 'Uploading...' : messageData.uploadedImageUrls.length > 0 ? 'Uploaded' : 'Create Gallery'}
                     </Button>
                   </div>
                 </>
@@ -531,7 +587,7 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
           </div>
         </div>
 
-        {/* Preview and Send Buttons */}
+        {/* Preview and Next Stage Buttons */}
         <div className="flex justify-end items-center gap-4 pt-4">
           <Button
             variant="outline"
@@ -542,12 +598,12 @@ export function MessageComposer({ filteredContacts, onSendComplete, onSendStart 
             {showPreview ? 'Hide Preview' : 'Show Preview'}
           </Button>
           <Button
-            onClick={sendToAll}
-            disabled={!isFormValid() || isSending || isUploading}
+            onClick={onNextStage}
+            disabled={!isFormValid() || isUploading}
             className="bg-blue-600 hover:bg-blue-700 text-white"
           >
-            <Send className="h-4 w-4 mr-2" />
-            Send to {filteredContacts.length} Contact{filteredContacts.length !== 1 ? 's' : ''}
+            <ArrowRight className="h-4 w-4 mr-2" />
+            Continue to Preview
           </Button>
         </div>
 

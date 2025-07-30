@@ -11,13 +11,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { Trash2, Plus, Upload, Download, ArrowLeft, Search, Filter, X } from 'lucide-react';
+import { Trash2, Plus, Upload, Download, ArrowLeft, Search, Filter, X, Settings, Users, Car, Package, Phone } from 'lucide-react';
 import { generateId, formatWhatsAppNumber, isValidWhatsAppNumber } from '@/lib/utils';
 import { CsvImport } from '@/components/CsvImport';
 import { CsvManagement } from '@/components/CsvManagement';
 import { StorageStatus } from '@/components/StorageStatus';
 import { ConditionMultiSelect } from '@/components/ConditionMultiSelect';
 import { useNavigate } from 'react-router-dom';
+import { TableEditor } from '@/components/TableEditor';
+import { SettingsModal } from '@/components/SettingsModal';
 
 export function Contacts() {
   const {
@@ -29,9 +31,7 @@ export function Contacts() {
     deleteContact,
     clearAllContacts,
     exportContactsAsCsv,
-    exportContactsAsJson,
     importContactsFromCsv,
-    importContactsFromJson,
     createBackup,
     restoreFromBackup,
     searchBySupplier,
@@ -42,6 +42,7 @@ export function Contacts() {
   const navigate = useNavigate();
 
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [newContact, setNewContact] = useState<Partial<Contact>>({
     supplierName: '',
@@ -258,15 +259,7 @@ export function Contacts() {
 
 
 
-  const handleClearAll = async () => {
-    if (confirm('Are you sure you want to delete all contacts? This action cannot be undone.')) {
-      await clearAllContacts();
-      toast({
-        title: "All Contacts Deleted",
-        description: "All contacts have been removed",
-      });
-    }
-  };
+
 
   if (loading) {
     return (
@@ -300,12 +293,12 @@ export function Contacts() {
               </div>
               <div className="flex items-center gap-2">
                 <Button
-                  variant="destructive"
-                  onClick={handleClearAll}
+                  variant="outline"
+                  onClick={() => setIsSettingsOpen(true)}
                   className="flex items-center gap-2"
                 >
-                  <Trash2 className="h-4 w-4" />
-                  Clear All
+                  <Settings className="h-4 w-4" />
+                  Settings
                 </Button>
               </div>
             </div>
@@ -317,26 +310,6 @@ export function Contacts() {
             </p>
           </CardContent>
         </Card>
-
-        {/* Import Section */}
-        <CsvImport onImport={async (csvContent) => {
-          await importContactsFromCsv(csvContent);
-          toast({
-            title: "Contacts Imported",
-            description: "Contacts have been imported successfully",
-          });
-        }} />
-
-        {/* Storage Status Section */}
-        <StorageStatus />
-
-        {/* CSV Management Section */}
-        <CsvManagement
-          onImport={importContactsFromCsv}
-          onExport={exportContactsAsCsv}
-          onCreateBackup={createBackup}
-          onRestoreBackup={restoreFromBackup}
-        />
 
         {/* Search and Filter Section */}
         <Card>
@@ -397,22 +370,24 @@ export function Contacts() {
             </div>
             <div className="flex justify-between items-center mt-4">
               <div className="flex items-center gap-2">
-                <Badge variant="secondary">
-                  {filteredContacts.length} of {contacts.length} contacts
-                </Badge>
-                {filters.supplierName || filters.vehicleMake || filters.partCategory || filters.condition !== 'all' ? (
-                  <Badge variant="outline">
-                    Filters active
-                  </Badge>
-                ) : null}
+                <Button
+                  variant="outline"
+                  onClick={resetFilters}
+                  className="flex items-center gap-2"
+                >
+                  <Filter className="h-4 w-4" />
+                  Reset Filters
+                </Button>
+                <span className="text-sm text-muted-foreground">
+                  Showing {filteredContacts.length} of {contacts.length} contacts
+                </span>
               </div>
               <Button
-                variant="outline"
-                onClick={resetFilters}
+                onClick={() => setIsAddDialogOpen(true)}
                 className="flex items-center gap-2"
               >
-                <X className="h-4 w-4" />
-                Reset Filters
+                <Plus className="h-4 w-4" />
+                Add Contact
               </Button>
             </div>
           </CardContent>
@@ -423,15 +398,10 @@ export function Contacts() {
           <Card>
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">
+                  {selectedContacts.size} contact{selectedContacts.size !== 1 ? 's' : ''} selected
+                </span>
                 <div className="flex items-center gap-2">
-                  <Badge variant="default">
-                    {selectedContacts.size} selected
-                  </Badge>
-                  <span className="text-sm text-muted-foreground">
-                    Bulk actions available
-                  </span>
-                </div>
-                <div className="flex gap-2">
                   <Button
                     variant="outline"
                     onClick={handleBulkExport}
@@ -530,160 +500,107 @@ export function Contacts() {
         {/* Contacts Table */}
         <Card>
           <CardHeader>
-            <CardTitle>
-              {filters.supplierName || filters.vehicleMake || filters.partCategory || filters.condition !== 'all' 
-                ? `Filtered Contacts (${filteredContacts.length})` 
-                : `All Contacts (${contacts.length})`
-              }
+            <CardTitle className="flex items-center gap-2">
+              <Users className="h-5 w-5" />
+              Contacts ({filteredContacts.length})
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {filteredContacts.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                {contacts.length === 0 ? (
-                  <p>No contacts found. Add your first contact or import from CSV.</p>
-                ) : (
-                  <p>No contacts match your current filters. Try adjusting your search criteria.</p>
-                )}
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-12">
-                      <Checkbox
-                        checked={selectAll}
-                        onCheckedChange={(checked) => setSelectAll(checked as boolean)}
-                        aria-label="Select all"
-                      />
-                    </TableHead>
-                    <TableHead>Supplier Name</TableHead>
-                    <TableHead>Vehicle Make</TableHead>
-                    <TableHead>Part Category</TableHead>
-                    <TableHead>Condition</TableHead>
-                    <TableHead>WhatsApp Number</TableHead>
-                    <TableHead>Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredContacts.map((contact) => (
-                    <TableRow key={contact.id}>
-                      <TableCell>
-                        <Checkbox
-                          checked={selectedContacts.has(contact.id)}
-                          onCheckedChange={(checked) => handleContactSelection(contact.id, checked as boolean)}
-                          aria-label={`Select ${contact.supplierName}`}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        {editingContact?.id === contact.id ? (
-                          <Input
-                            value={editingContact.supplierName}
-                            onChange={(e) => setEditingContact(prev => prev ? { ...prev, supplierName: e.target.value } : null)}
-                          />
-                        ) : (
-                          contact.supplierName
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {editingContact?.id === contact.id ? (
-                          <Input
-                            value={editingContact.vehicleMake}
-                            onChange={(e) => setEditingContact(prev => prev ? { ...prev, vehicleMake: e.target.value } : null)}
-                          />
-                        ) : (
-                          contact.vehicleMake
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {editingContact?.id === contact.id ? (
-                          <Input
-                            value={editingContact.partCategory?.join(', ') || ''}
-                            onChange={(e) => setEditingContact(prev => prev ? { 
-                              ...prev, 
-                              partCategory: e.target.value.split(',').map(cat => cat.trim()).filter(cat => cat !== '')
-                            } : null)}
-                          />
-                        ) : (
-                          <div className="flex flex-wrap gap-1">
-                            {contact.partCategory.map((category, index) => (
-                              <Badge key={index} variant="outline" className="text-xs">
-                                {category.trim()}
-                              </Badge>
-                            ))}
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {editingContact?.id === contact.id ? (
-                          <ConditionMultiSelect
-                            value={editingContact.conditions}
-                            onChange={(conditions) => setEditingContact(prev => prev ? { ...prev, conditions } : null)}
-                            label=""
-                          />
-                        ) : (
-                          <div className="flex flex-wrap gap-1">
-                            {(contact.conditions || []).map((condition, index) => (
-                              <Badge key={index} variant="secondary" className="text-xs">
-                                {condition.charAt(0).toUpperCase() + condition.slice(1)}
-                              </Badge>
-                            ))}
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {editingContact?.id === contact.id ? (
-                          <Input
-                            value={editingContact.whatsappNumber}
-                            onChange={(e) => setEditingContact(prev => prev ? { ...prev, whatsappNumber: e.target.value } : null)}
-                          />
-                        ) : (
-                          contact.whatsappNumber
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {editingContact?.id === contact.id ? (
-                          <div className="flex gap-2">
-                            <Button
-                              size="sm"
-                              onClick={() => handleUpdateContact(editingContact)}
-                            >
-                              Save
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setEditingContact(null)}
-                            >
-                              Cancel
-                            </Button>
-                          </div>
-                        ) : (
-                          <div className="flex gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setEditingContact(contact)}
-                            >
-                              Edit
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              onClick={() => handleDeleteContact(contact)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
+            <TableEditor
+              data={filteredContacts}
+              selectedRows={selectedContacts}
+              onSelectionChange={setSelectedContacts}
+              onSelectAll={setSelectAll}
+              selectAll={selectAll}
+              onEdit={handleUpdateContact}
+              onDelete={handleDeleteContact}
+              columns={[
+                {
+                  key: 'supplierName',
+                  header: 'Supplier Name',
+                  cell: (contact) => (
+                    <div className="font-medium">{contact.supplierName}</div>
+                  ),
+                },
+                {
+                  key: 'vehicleMake',
+                  header: 'Vehicle Makes',
+                  cell: (contact) => (
+                    <div className="flex flex-wrap gap-1">
+                      {contact.vehicleMake.split(';').map((make, index) => (
+                        <span
+                          key={index}
+                          className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
+                        >
+                          {make.trim()}
+                        </span>
+                      ))}
+                    </div>
+                  ),
+                },
+                {
+                  key: 'partCategory',
+                  header: 'Part Categories',
+                  cell: (contact) => (
+                    <div className="flex flex-wrap gap-1">
+                      {contact.partCategory.map((category, index) => (
+                        <span
+                          key={index}
+                          className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800"
+                        >
+                          {category}
+                        </span>
+                      ))}
+                    </div>
+                  ),
+                },
+                {
+                  key: 'conditions',
+                  header: 'Conditions',
+                  cell: (contact) => (
+                    <div className="flex flex-wrap gap-1">
+                      {contact.conditions.map((condition, index) => (
+                        <span
+                          key={index}
+                          className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800"
+                        >
+                          {condition}
+                        </span>
+                      ))}
+                    </div>
+                  ),
+                },
+                {
+                  key: 'whatsappNumber',
+                  header: 'WhatsApp',
+                  cell: (contact) => (
+                    <div className="flex items-center gap-2">
+                      <Phone className="h-4 w-4 text-green-600" />
+                      <span className="font-mono text-sm">{contact.whatsappNumber}</span>
+                    </div>
+                  ),
+                },
+              ]}
+            />
           </CardContent>
         </Card>
+
+        {/* Settings Modal */}
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+          onImportComplete={async () => {
+            toast({
+              title: "Contacts Imported",
+              description: "Contacts have been imported successfully",
+            });
+          }}
+          onExport={async () => {
+            await exportContactsAsCsv();
+          }}
+          onCreateBackup={createBackup}
+          onRestoreBackup={restoreFromBackup}
+        />
       </div>
     </div>
   );

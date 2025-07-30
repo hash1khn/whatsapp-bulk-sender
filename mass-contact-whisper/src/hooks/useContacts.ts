@@ -1,188 +1,140 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Contact } from '../types/contact';
-import { ContactStorageService } from '../lib/storage';
+import { useState, useEffect } from 'react';
+import { Contact } from '@/types/contact';
+import { fileStorageService } from '@/lib/fileStorage';
 
 export function useContacts() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
 
-  // Load contacts from CSV storage on mount
+  // Load contacts on mount
   useEffect(() => {
-    const loadContacts = async () => {
-      try {
-        const storedContacts = await ContactStorageService.getAllContacts();
-        setContacts(storedContacts);
-      } catch (err) {
-        setError('Failed to load contacts');
-        console.error('Error loading contacts:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    
     loadContacts();
   }, []);
 
-  // Add a new contact
-  const addContact = useCallback(async (contact: Contact) => {
+  const loadContacts = async () => {
     try {
-      await ContactStorageService.addContact(contact);
-      setContacts(prev => [...prev, contact]);
+      setLoading(true);
+      const loadedContacts = await fileStorageService.getAllContacts();
+      setContacts(loadedContacts);
       setError(null);
     } catch (err) {
-      setError('Failed to add contact');
-      console.error('Error adding contact:', err);
+      setError(err instanceof Error ? err : new Error('Failed to load contacts'));
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  };
 
-  // Update an existing contact
-  const updateContact = useCallback(async (updatedContact: Contact) => {
+  const addContact = async (contact: Contact) => {
     try {
-      await ContactStorageService.updateContact(updatedContact);
-      setContacts(prev => 
-        prev.map(contact => 
-          contact.id === updatedContact.id ? updatedContact : contact
-        )
+      const newContacts = [...contacts, contact];
+      await fileStorageService.saveAllContacts(newContacts);
+      setContacts(newContacts);
+    } catch (err) {
+      throw err instanceof Error ? err : new Error('Failed to add contact');
+    }
+  };
+
+  const updateContact = async (updatedContact: Contact) => {
+    try {
+      const newContacts = contacts.map(contact => 
+        contact.id === updatedContact.id ? updatedContact : contact
       );
-      setError(null);
+      await fileStorageService.saveAllContacts(newContacts);
+      setContacts(newContacts);
     } catch (err) {
-      setError('Failed to update contact');
-      console.error('Error updating contact:', err);
+      throw err instanceof Error ? err : new Error('Failed to update contact');
     }
-  }, []);
+  };
 
-  // Delete a contact
-  const deleteContact = useCallback(async (contactId: string) => {
+  const deleteContact = async (contactId: string) => {
     try {
-      await ContactStorageService.deleteContact(contactId);
-      setContacts(prev => prev.filter(contact => contact.id !== contactId));
-      setError(null);
+      const newContacts = contacts.filter(contact => contact.id !== contactId);
+      await fileStorageService.saveAllContacts(newContacts);
+      setContacts(newContacts);
     } catch (err) {
-      setError('Failed to delete contact');
-      console.error('Error deleting contact:', err);
+      throw err instanceof Error ? err : new Error('Failed to delete contact');
     }
-  }, []);
+  };
 
-  // Search contacts by supplier name
-  const searchBySupplier = useCallback(async (supplierName: string) => {
-    return await ContactStorageService.searchContactsBySupplier(supplierName);
-  }, []);
-
-  // Search contacts by vehicle make
-  const searchByVehicleMake = useCallback(async (vehicleMake: string) => {
-    return await ContactStorageService.searchContactsByVehicleMake(vehicleMake);
-  }, []);
-
-  // Search contacts by part category
-  const searchByPartCategory = useCallback(async (partCategory: string) => {
-    return await ContactStorageService.searchContactsByPartCategory(partCategory);
-  }, []);
-
-  // Filter contacts by condition
-  const filterByCondition = useCallback(async (condition: 'new' | 'used' | 'aftermarket') => {
-    return await ContactStorageService.filterContactsByCondition(condition);
-  }, []);
-
-  // Clear all contacts
-  const clearAllContacts = useCallback(async () => {
+  const clearAllContacts = async () => {
     try {
-      await ContactStorageService.clearAllContacts();
+      await fileStorageService.saveAllContacts([]);
       setContacts([]);
-      setError(null);
     } catch (err) {
-      setError('Failed to clear contacts');
-      console.error('Error clearing contacts:', err);
+      throw err instanceof Error ? err : new Error('Failed to clear contacts');
     }
-  }, []);
-
-  // Export contacts as CSV
-  const exportContactsAsCsv = useCallback(async () => {
-    try {
-      return await ContactStorageService.exportContactsAsCsv();
-    } catch (err) {
-      setError('Failed to export contacts');
-      console.error('Error exporting contacts:', err);
-      return null;
-    }
-  }, []);
-
-  // Export contacts as JSON
-  const exportContactsAsJson = useCallback(async () => {
-    try {
-      return await ContactStorageService.exportContactsAsJson();
-    } catch (err) {
-      setError('Failed to export contacts');
-      console.error('Error exporting contacts:', err);
-      return null;
-    }
-  }, []);
+  };
 
   // Import contacts from CSV
-  const importContactsFromCsv = useCallback(async (csvContent: string) => {
+  const importContactsFromCsv = async (csvContent: string) => {
     try {
-      await ContactStorageService.importContactsFromCsv(csvContent);
-      const importedContacts = await ContactStorageService.getAllContacts();
-      setContacts(importedContacts);
-      setError(null);
-    } catch (err) {
-      setError('Failed to import contacts');
-      console.error('Error importing contacts:', err);
+      const result = await fileStorageService.importContactsFromCsv(csvContent);
+      if (result.success) {
+        // Reload contacts after successful import
+        await loadContacts();
+        return result;
+      } else {
+        throw new Error(result.message);
+      }
+    } catch (error) {
+      console.error('Error importing contacts:', error);
+      throw error;
     }
-  }, []);
+  };
 
-  // Import contacts from JSON
-  const importContactsFromJson = useCallback(async (contactsJson: string) => {
+  const exportContactsAsCsv = async (): Promise<string | null> => {
     try {
-      await ContactStorageService.importContactsFromJson(contactsJson);
-      const importedContacts = await ContactStorageService.getAllContacts();
-      setContacts(importedContacts);
-      setError(null);
+      const csvContent = await fileStorageService.exportContactsAsCsv();
+      return csvContent;
     } catch (err) {
-      setError('Failed to import contacts');
-      console.error('Error importing contacts:', err);
+      console.error('Export failed:', err);
+      return null;
     }
-  }, []);
+  };
 
-  // Get contacts count
-  const getContactsCount = useCallback(async () => {
-    return await ContactStorageService.getContactsCount();
-  }, []);
-
-  // Create backup
-  const createBackup = useCallback(async () => {
+  const createBackup = async () => {
     try {
-      await ContactStorageService.createBackup();
-      setError(null);
+      await fileStorageService.createBackup();
     } catch (err) {
-      setError('Failed to create backup');
-      console.error('Error creating backup:', err);
+      throw err instanceof Error ? err : new Error('Failed to create backup');
     }
-  }, []);
+  };
 
-  // Restore from backup
-  const restoreFromBackup = useCallback(async () => {
+  const restoreFromBackup = async () => {
     try {
-      await ContactStorageService.restoreFromBackup();
-      const restoredContacts = await ContactStorageService.getAllContacts();
-      setContacts(restoredContacts);
-      setError(null);
+      await fileStorageService.restoreFromBackup();
+      await loadContacts(); // Reload contacts after restore
     } catch (err) {
-      setError('Failed to restore from backup');
-      console.error('Error restoring from backup:', err);
+      throw err instanceof Error ? err : new Error('Failed to restore from backup');
     }
-  }, []);
+  };
 
-  // Legacy methods for backward compatibility
-  const exportContacts = useCallback(() => {
-    console.warn('exportContacts() is deprecated, use exportContactsAsJson() instead');
-    return '[]';
-  }, []);
+  const searchBySupplier = (supplierName: string) => {
+    return contacts.filter(contact => 
+      contact.supplierName.toLowerCase().includes(supplierName.toLowerCase())
+    );
+  };
 
-  const importContacts = useCallback((contactsJson: string) => {
-    console.warn('importContacts() is deprecated, use importContactsFromJson() instead');
-    importContactsFromJson(contactsJson);
-  }, [importContactsFromJson]);
+  const searchByVehicleMake = (vehicleMake: string) => {
+    return contacts.filter(contact => 
+      contact.vehicleMake.toLowerCase().includes(vehicleMake.toLowerCase())
+    );
+  };
+
+  const searchByPartCategory = (partCategory: string) => {
+    return contacts.filter(contact => 
+      contact.partCategory.some(category => 
+        category.toLowerCase().includes(partCategory.toLowerCase())
+      )
+    );
+  };
+
+  const filterByCondition = (condition: 'new' | 'used' | 'aftermarket') => {
+    return contacts.filter(contact => 
+      contact.conditions.includes(condition)
+    );
+  };
 
   return {
     contacts,
@@ -191,20 +143,14 @@ export function useContacts() {
     addContact,
     updateContact,
     deleteContact,
+    clearAllContacts,
+    importContactsFromCsv,
+    exportContactsAsCsv,
+    createBackup,
+    restoreFromBackup,
     searchBySupplier,
     searchByVehicleMake,
     searchByPartCategory,
     filterByCondition,
-    clearAllContacts,
-    exportContactsAsCsv,
-    exportContactsAsJson,
-    importContactsFromCsv,
-    importContactsFromJson,
-    getContactsCount,
-    createBackup,
-    restoreFromBackup,
-    // Legacy methods for backward compatibility
-    exportContacts,
-    importContacts,
   };
 } 

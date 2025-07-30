@@ -9,39 +9,57 @@ if (typeof window !== 'undefined') {
   console.log('Cleared localStorage for fresh sample data');
 }
 
-// File Storage Service for Contacts
-export class FileStorageService {
-  private static readonly CONTACTS_FILE = 'data/contacts.csv';
-  private static readonly CONTACTS_BACKUP_FILE = 'data/contacts_backup.csv';
-  private static fileHandle: FileSystemFileHandle | null = null;
+export interface FileStorageService {
+  getAllContacts(): Promise<Contact[]>;
+  saveAllContacts(contacts: Contact[]): Promise<void>;
+  importContactsFromCsv(csvContent: string): Promise<{ success: boolean; message: string; errors?: string[]; stats?: { total: number; added: number; updated: number } }>;
+  exportContactsAsCsv(): Promise<string>;
+  createBackup(): Promise<void>;
+  restoreFromBackup(): Promise<void>;
+  getCsvTemplate(): string;
+  isFileSystemAvailable(): boolean;
+  hasSelectedFile(): boolean;
+  getSelectedFileName(): string | null;
+  requestFileSelection(): Promise<FileSystemFileHandle | null>;
+  setLocalFileMode(enabled: boolean): void;
+  getStorageMode(): 'local' | 'file' | 'localStorage';
+  getLocalFilePath(): string;
+}
+
+class FileStorageServiceImpl implements FileStorageService {
+  private readonly CONTACTS_FILE = 'data/contacts.csv';
+  private readonly CONTACTS_BACKUP_FILE = 'data/contacts_backup.csv';
+  private fileHandle: FileSystemFileHandle | null = null;
+  private useLocalFile: boolean = true; // Default to using local file
 
   // Convert contact to CSV row
-  private static contactToCsvRow(contact: Contact): string {
-    const conditions = contact.conditions.join(';');
+  private contactToCsvRow(contact: Contact): string {
+    const vehicleMakes = contact.vehicleMake.split(';').map(m => m.trim()).filter(Boolean).join(';');
     const partCategories = contact.partCategory.join(';');
-    return `"${contact.id}","${contact.supplierName}","${contact.vehicleMake}","${conditions}","${partCategories}","${contact.whatsappNumber}"`;
+    const conditions = contact.conditions.join(';');
+    return `"${contact.id}","${contact.supplierName}","${vehicleMakes}","${partCategories}","${conditions}","${contact.whatsappNumber}"`;
   }
 
   // Convert CSV row to contact
-  private static csvRowToContact(row: string): Contact | null {
+  private csvRowToContact(row: string): Contact | null {
     try {
       // Parse CSV row with proper quote handling
       const columns = this.parseCsvRow(row);
       
       if (columns.length >= 6) {
-        const conditions = columns[3].split(';').filter(c => 
-          ['new', 'used', 'aftermarket'].includes(c)
-        ) as ('new' | 'used' | 'aftermarket')[];
-        
-        const partCategories = columns[4].split(';').filter(c => c.trim() !== '');
+        const vehicleMakes = columns[2].trim();
+        const partCategories = columns[3].split(';').map(cat => cat.trim()).filter(Boolean);
+        const conditions = columns[4].split(';')
+          .map(c => c.trim().toLowerCase())
+          .filter(c => ['new', 'used', 'aftermarket'].includes(c)) as ('new' | 'used' | 'aftermarket')[];
         
         return {
-          id: columns[0],
-          supplierName: columns[1],
-          vehicleMake: columns[2],
+          id: columns[0] || generateId(),
+          supplierName: columns[1].trim(),
+          vehicleMake: vehicleMakes,
+          partCategory: partCategories.length > 0 ? partCategories : ['General'],
           conditions: conditions.length > 0 ? conditions : ['new'],
-          partCategory: partCategories.length > 0 ? partCategories : [],
-          whatsappNumber: columns[5],
+          whatsappNumber: columns[5].trim()
         };
       }
     } catch (error) {
@@ -51,7 +69,7 @@ export class FileStorageService {
   }
 
   // Parse CSV row with proper quote handling
-  private static parseCsvRow(row: string): string[] {
+  private parseCsvRow(row: string): string[] {
     const columns: string[] = [];
     let current = '';
     let inQuotes = false;
@@ -74,40 +92,23 @@ export class FileStorageService {
   }
 
   // Get CSV header
-  private static getCsvHeader(): string {
-    return '"ID","Supplier Name","Vehicle Make","Conditions","Part Category","WhatsApp Number"';
+  private getCsvHeader(): string {
+    return '"ID","Supplier Name","Vehicle Makes (;-separated)","Part Categories (;-separated)","Conditions (;-separated)","WhatsApp Number"';
   }
 
   // Check if File System Access API is supported
-  private static isFileSystemSupported(): boolean {
+  private isFileSystemSupported(): boolean {
     return 'showOpenFilePicker' in window && 'showSaveFilePicker' in window;
   }
 
-  // Request file handle for contacts
-  private static async requestFileHandle(): Promise<FileSystemFileHandle | null> {
-    if (!this.isFileSystemSupported()) {
-      console.warn('File System Access API not supported, falling back to localStorage');
-      return null;
-    }
-
-    // Return existing file handle if available
-    if (this.fileHandle) {
-      return this.fileHandle;
-    }
-
-    // Don't automatically request file selection - return null to use localStorage
-    return null;
-  }
-
-  // Explicitly request file selection (called by user action)
-  static async requestFileSelection(): Promise<FileSystemFileHandle | null> {
+  // Request file selection
+  public async requestFileSelection(): Promise<FileSystemFileHandle | null> {
     if (!this.isFileSystemSupported()) {
       console.warn('File System Access API not supported');
       return null;
     }
 
     try {
-      // Request user to select the contacts file
       const [fileHandle] = await window.showOpenFilePicker({
         types: [{
           description: 'CSV Files',
@@ -126,261 +127,286 @@ export class FileStorageService {
     }
   }
 
-  // Read contacts from file
-  static async readContactsFromFile(): Promise<Contact[]> {
-    try {
-      const fileHandle = await this.requestFileHandle();
-      
-      if (fileHandle) {
-        // Read from actual file
-        const file = await fileHandle.getFile();
-        const content = await file.text();
-        return this.parseCsvContent(content);
-      } else {
-        // Try to read from default file location
-        try {
-          const response = await fetch('/data/contacts.csv');
-          if (response.ok) {
-            const content = await response.text();
-            const contacts = this.parseCsvContent(content);
-            if (contacts.length > 0) {
-              console.log('Loaded contacts from default file location');
-              return contacts;
-            }
-          }
-        } catch (fetchError) {
-          console.log('Could not load from default file location, falling back to localStorage');
-        }
-        
-        // Fallback to localStorage
-        return this.readFromLocalStorage();
-      }
-    } catch (error) {
-      console.error('Error reading contacts from file:', error);
-      // Fallback to localStorage
-      return this.readFromLocalStorage();
-    }
+  // Check if a file is currently selected
+  public hasSelectedFile(): boolean {
+    return this.fileHandle !== null;
   }
 
-  // Write contacts to file
-  static async writeContactsToFile(contacts: Contact[]): Promise<void> {
-    try {
-      const csvContent = this.generateCsvContent(contacts);
-      
-      const fileHandle = await this.requestFileHandle();
-      
-      if (fileHandle) {
-        // Write to actual file
-        const writable = await fileHandle.createWritable();
-        await writable.write(csvContent);
-        await writable.close();
-      }
-      
-      // Always save to localStorage as backup
-      this.saveToLocalStorage(csvContent);
-    } catch (error) {
-      console.error('Error writing contacts to file:', error);
-      // Fallback to localStorage only
-      const csvContent = this.generateCsvContent(contacts);
-      this.saveToLocalStorage(csvContent);
-    }
-  }
-
-  // Parse CSV content
-  private static parseCsvContent(content: string): Contact[] {
-    const lines = content.trim().split('\n').filter(line => line.trim());
-    if (lines.length <= 1) return []; // Only header or empty
-    
-    const contacts: Contact[] = [];
-    
-    // Skip header row
-    for (let i = 1; i < lines.length; i++) {
-      const contact = this.csvRowToContact(lines[i]);
-      if (contact) {
-        contacts.push(contact);
-      }
-    }
-    
-    return contacts;
+  // Get the name of the selected file
+  public getSelectedFileName(): string | null {
+    return this.fileHandle?.name || null;
   }
 
   // Generate CSV content
-  private static generateCsvContent(contacts: Contact[]): string {
+  private generateCsvContent(contacts: Contact[]): string {
     return [
       this.getCsvHeader(),
       ...contacts.map(contact => this.contactToCsvRow(contact))
     ].join('\n');
   }
 
-  // Read from localStorage (fallback)
-  private static readFromLocalStorage(): Contact[] {
-    try {
-      const contactsJson = localStorage.getItem('WASSENDER_CONTACTS_CSV');
-      if (!contactsJson) {
-        // If no contacts in localStorage, add sample data
-        const sampleContacts: Contact[] = [
-          {
-            id: 'contact-1',
-            supplierName: 'Sean',
-            vehicleMake: 'BMW;Mercedes',
-            conditions: ['used', 'new', 'aftermarket'] as ('new' | 'used' | 'aftermarket')[],
-            partCategory: ['Engine Parts', 'Transmission', 'Brake Pads'],
-            whatsappNumber: '+971567191045'
-          },
-          {
-            id: 'contact-2',
-            supplierName: 'Easy Car Parts',
-            vehicleMake: 'Audi',
-            conditions: ['used'] as ('new' | 'used' | 'aftermarket')[],
-            partCategory: ['Suspension', 'Electrical', 'Body Parts'],
-            whatsappNumber: '+971551776860'
-          },
-          {
-            id: 'contact-3',
-            supplierName: 'Jayden',
-            vehicleMake: 'BMW;Toyota',
-            conditions: ['used'] as ('new' | 'used' | 'aftermarket')[],
-            partCategory: ['Engine Parts', 'Cooling System', 'Exhaust'],
-            whatsappNumber: '+971566438040'
+  // Get CSV template
+  public getCsvTemplate(): string {
+    return [
+      this.getCsvHeader(),
+      '"example-1","ABC Motors","Toyota;Honda","Engine Parts;Transmission","new;used","+1234567890"',
+      '"example-2","XYZ Auto","BMW;Mercedes","Brake Pads;Suspension","used;aftermarket","+0987654321"'
+    ].join('\n');
+  }
+
+  // Parse CSV content
+  private parseCsvContent(content: string): Contact[] {
+    console.log('Starting CSV parsing...');
+    const lines = content.trim().split('\n').filter(line => line.trim());
+    
+    if (lines.length <= 1) {
+      console.warn('CSV file is empty or contains only header');
+      throw new Error('CSV file is empty or contains only header');
+    }
+
+    // Validate header
+    const headerRow = this.parseCsvRow(lines[0]);
+    const expectedColumns = ['ID', 'Supplier Name', 'Vehicle Makes', 'Part Categories', 'Conditions', 'WhatsApp Number'];
+    const headerValid = expectedColumns.every((col, index) => 
+      headerRow[index]?.toLowerCase().includes(col.toLowerCase())
+    );
+
+    if (!headerValid) {
+      console.error('Invalid CSV header format', {
+        expected: expectedColumns,
+        found: headerRow
+      });
+      throw new Error(`Invalid CSV header. Expected columns: ${expectedColumns.join(', ')}`);
+    }
+
+    const contacts: Contact[] = [];
+    const errors: string[] = [];
+    
+    // Skip header row
+    for (let i = 1; i < lines.length; i++) {
+      try {
+        const contact = this.csvRowToContact(lines[i]);
+        if (contact) {
+          // Validate contact
+          const validationErrors = this.validateContact(contact, i + 1);
+          if (validationErrors.length > 0) {
+            errors.push(...validationErrors);
+          } else {
+            contacts.push(contact);
           }
-        ];
+        } else {
+          errors.push(`Row ${i + 1}: Failed to parse row`);
+        }
+      } catch (error) {
+        console.error(`Error parsing row ${i + 1}:`, error);
+        errors.push(`Row ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    }
+
+    // Log parsing results
+    console.log('CSV parsing complete', {
+      totalRows: lines.length - 1,
+      validContacts: contacts.length,
+      errors: errors.length > 0 ? errors : 'None'
+    });
+
+    if (errors.length > 0) {
+      throw new Error(`CSV import failed with ${errors.length} errors:\n${errors.join('\n')}`);
+    }
+
+    return contacts;
+  }
+
+  // Import contacts from CSV content
+  public async importContactsFromCsv(csvContent: string): Promise<{ success: boolean; message: string; errors?: string[]; stats?: { total: number; added: number; updated: number } }> {
+    try {
+      console.log('Starting CSV import...');
+      
+      // Parse the CSV content
+      const newContacts = this.parseCsvContent(csvContent);
+      if (newContacts.length === 0) {
+        return { success: false, message: 'No valid contacts found in CSV' };
+      }
+
+      // Get existing contacts
+      const existingContacts = await this.getAllContacts();
+      console.log(`Found ${existingContacts.length} existing contacts`);
+
+      // Create a map for quick lookup by WhatsApp number
+      const existingMap = new Map<string, Contact>();
+      existingContacts.forEach(contact => {
+        existingMap.set(contact.whatsappNumber, contact);
+      });
+
+      let added = 0;
+      let updated = 0;
+      const mergedContacts: Contact[] = [];
+
+      // Process new contacts
+      for (const newContact of newContacts) {
+        const existing = existingMap.get(newContact.whatsappNumber);
         
-        // Save sample data to localStorage
-        const sampleCsv = this.generateCsvContent(sampleContacts);
-        this.saveToLocalStorage(sampleCsv);
-        
-        return sampleContacts;
+        if (existing) {
+          // Update existing contact (preserve original ID)
+          const updatedContact: Contact = {
+            ...newContact,
+            id: existing.id // Keep the original ID
+          };
+          mergedContacts.push(updatedContact);
+          updated++;
+          console.log(`Updated contact: ${newContact.supplierName} (${newContact.whatsappNumber})`);
+        } else {
+          // Add new contact
+          mergedContacts.push(newContact);
+          added++;
+          console.log(`Added new contact: ${newContact.supplierName} (${newContact.whatsappNumber})`);
+        }
+      }
+
+      // Save merged contacts
+      await this.saveAllContacts(mergedContacts);
+      
+      // Clear any cached data to force fresh read
+      localStorage.removeItem('WASSENDER_CONTACTS_CSV');
+      
+      console.log(`Import completed: ${added} added, ${updated} updated, ${mergedContacts.length} total`);
+      
+      return {
+        success: true,
+        message: `Successfully imported ${newContacts.length} contacts (${added} added, ${updated} updated)`,
+        stats: { total: mergedContacts.length, added, updated }
+      };
+
+    } catch (error) {
+      console.error('Error importing contacts:', error);
+      return { success: false, message: `Import failed: ${error instanceof Error ? error.message : 'Unknown error'}` };
+    }
+  }
+
+  // Save all contacts - save to local file by default
+  public async saveAllContacts(contacts: Contact[]): Promise<void> {
+    try {
+      const csvContent = this.generateCsvContent(contacts);
+      
+      // Always save to local file if using local file mode
+      if (this.useLocalFile) {
+        try {
+          // Note: This will only work if the server allows writing to /data/
+          // For now, we'll save to localStorage and provide instructions
+          localStorage.setItem('WASSENDER_CONTACTS_CSV', csvContent);
+          console.log('Saved contacts to localStorage (local file mode)');
+          console.log('To save to /data/contacts.csv, you need to manually copy the data');
+        } catch (error) {
+          console.warn('Could not write to local file, using localStorage');
+          localStorage.setItem('WASSENDER_CONTACTS_CSV', csvContent);
+        }
       }
       
-      return this.parseCsvContent(contactsJson);
+      // Also save to selected file if available
+      if (this.fileHandle) {
+        const writable = await this.fileHandle.createWritable();
+        await writable.write(csvContent);
+        await writable.close();
+        console.log('Saved contacts to selected file:', this.fileHandle.name);
+      }
+      
+      // Always save to localStorage as backup
+      localStorage.setItem('WASSENDER_CONTACTS_CSV_BACKUP', csvContent);
     } catch (error) {
-      console.error('Error reading from localStorage:', error);
+      console.error('Error saving contacts:', error);
+      throw new Error('Failed to save contacts');
+    }
+  }
+
+  // Get all contacts - prioritize local file
+  public async getAllContacts(): Promise<Contact[]> {
+    try {
+      // First try to read from local file
+      if (this.useLocalFile) {
+        try {
+          // Force fresh read by adding cache-busting parameter
+          const timestamp = new Date().getTime();
+          const response = await fetch(`/data/contacts.csv?t=${timestamp}`, {
+            cache: 'no-cache',
+            headers: {
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Pragma': 'no-cache',
+              'Expires': '0'
+            }
+          });
+          if (response.ok) {
+            const content = await response.text();
+            const contacts = this.parseCsvContent(content);
+            if (contacts.length > 0) {
+              console.log('Loaded contacts from local file: /data/contacts.csv');
+              // Clear localStorage to prevent caching conflicts
+              localStorage.removeItem('WASSENDER_CONTACTS_CSV');
+              return contacts;
+            }
+          }
+        } catch (fetchError) {
+          console.log('Could not load from local file, trying other sources');
+        }
+      }
+
+      // Then try selected file handle
+      if (this.fileHandle) {
+        const file = await this.fileHandle.getFile();
+        const content = await file.text();
+        return this.parseCsvContent(content);
+      }
+
+      // Finally fallback to localStorage
+      const contactsJson = localStorage.getItem('WASSENDER_CONTACTS_CSV');
+      if (contactsJson) {
+        return this.parseCsvContent(contactsJson);
+      }
+
+      return [];
+    } catch (error) {
+      console.error('Error reading contacts:', error);
       return [];
     }
   }
 
-  // Save to localStorage (backup)
-  private static saveToLocalStorage(csvContent: string): void {
-    try {
-      localStorage.setItem('WASSENDER_CONTACTS_CSV', csvContent);
-      localStorage.setItem('WASSENDER_CONTACTS_CSV_BACKUP', csvContent);
-    } catch (error) {
-      console.error('Error saving to localStorage:', error);
+  // Validate contact
+  private validateContact(contact: Contact, rowNumber: number): string[] {
+    const errors: string[] = [];
+
+    // Required fields
+    if (!contact.supplierName?.trim()) {
+      errors.push(`Row ${rowNumber}: Supplier Name is required`);
     }
-  }
-
-  // Get all contacts
-  static async getAllContacts(): Promise<Contact[]> {
-    const contacts = await this.readContactsFromFile();
-    console.log('getAllContacts returned:', contacts.length, 'contacts');
-    return contacts;
-  }
-
-  // Save all contacts
-  static async saveAllContacts(contacts: Contact[]): Promise<void> {
-    await this.writeContactsToFile(contacts);
-  }
-
-  // Add a new contact
-  static async addContact(contact: Contact): Promise<void> {
-    const contacts = await this.getAllContacts();
-    const newContact = {
-      ...contact,
-      id: contact.id || generateId()
-    };
-    contacts.push(newContact);
-    await this.saveAllContacts(contacts);
-  }
-
-  // Update an existing contact
-  static async updateContact(updatedContact: Contact): Promise<void> {
-    const contacts = await this.getAllContacts();
-    const index = contacts.findIndex(contact => contact.id === updatedContact.id);
-    
-    if (index !== -1) {
-      contacts[index] = updatedContact;
-      await this.saveAllContacts(contacts);
-    } else {
-      throw new Error('Contact not found');
+    if (!contact.vehicleMake?.trim()) {
+      errors.push(`Row ${rowNumber}: Vehicle Make is required`);
     }
-  }
+    if (!contact.whatsappNumber?.trim()) {
+      errors.push(`Row ${rowNumber}: WhatsApp Number is required`);
+    }
 
-  // Delete a contact
-  static async deleteContact(contactId: string): Promise<void> {
-    const contacts = await this.getAllContacts();
-    const filteredContacts = contacts.filter(contact => contact.id !== contactId);
-    await this.saveAllContacts(filteredContacts);
-  }
+    // WhatsApp number format
+    if (!/^\+[0-9]{10,15}$/.test(contact.whatsappNumber)) {
+      errors.push(`Row ${rowNumber}: Invalid WhatsApp number format. Must start with + and contain 10-15 digits`);
+    }
 
-  // Search contacts by supplier name
-  static async searchContactsBySupplier(supplierName: string): Promise<Contact[]> {
-    const contacts = await this.getAllContacts();
-    return contacts.filter(contact => 
-      contact.supplierName.toLowerCase().includes(supplierName.toLowerCase())
-    );
-  }
+    // Validate conditions
+    const validConditions = ['new', 'used', 'aftermarket'];
+    const invalidConditions = contact.conditions.filter(c => !validConditions.includes(c));
+    if (invalidConditions.length > 0) {
+      errors.push(`Row ${rowNumber}: Invalid conditions: ${invalidConditions.join(', ')}. Must be: new, used, or aftermarket`);
+    }
 
-  // Search contacts by vehicle make
-  static async searchContactsByVehicleMake(vehicleMake: string): Promise<Contact[]> {
-    const contacts = await this.getAllContacts();
-    return contacts.filter(contact => 
-      contact.vehicleMake.toLowerCase().includes(vehicleMake.toLowerCase())
-    );
-  }
-
-  // Search contacts by part category
-  static async searchContactsByPartCategory(partCategory: string): Promise<Contact[]> {
-    const contacts = await this.getAllContacts();
-    return contacts.filter(contact => 
-      contact.partCategory.some(category => 
-        category.toLowerCase().includes(partCategory.toLowerCase())
-      )
-    );
-  }
-
-  // Filter contacts by condition
-  static async filterContactsByCondition(condition: 'new' | 'used' | 'aftermarket'): Promise<Contact[]> {
-    const contacts = await this.getAllContacts();
-    return contacts.filter(contact => 
-      contact.conditions.includes(condition)
-    );
-  }
-
-  // Get contacts count
-  static async getContactsCount(): Promise<number> {
-    const contacts = await this.getAllContacts();
-    return contacts.length;
-  }
-
-  // Clear all contacts
-  static async clearAllContacts(): Promise<void> {
-    await this.writeContactsToFile([]);
+    return errors;
   }
 
   // Export contacts as CSV string
-  static async exportContactsAsCsv(): Promise<string> {
+  public async exportContactsAsCsv(): Promise<string> {
     const contacts = await this.getAllContacts();
     return this.generateCsvContent(contacts);
   }
 
-  // Import contacts from CSV string
-  static async importContactsFromCsv(csvContent: string): Promise<void> {
-    try {
-      const contacts = this.parseCsvContent(csvContent);
-      
-      if (contacts.length === 0) {
-        throw new Error('No valid contacts found in CSV');
-      }
-      
-      await this.saveAllContacts(contacts);
-    } catch (error) {
-      console.error('Error importing contacts from CSV:', error);
-      throw new Error('Failed to import contacts from CSV');
-    }
-  }
-
   // Create backup
-  static async createBackup(): Promise<void> {
+  public async createBackup(): Promise<void> {
     const contacts = await this.getAllContacts();
     const csvContent = this.generateCsvContent(contacts);
     
@@ -410,7 +436,7 @@ export class FileStorageService {
   }
 
   // Restore from backup
-  static async restoreFromBackup(): Promise<void> {
+  public async restoreFromBackup(): Promise<void> {
     try {
       if (this.isFileSystemSupported()) {
         const [fileHandle] = await window.showOpenFilePicker({
@@ -441,39 +467,29 @@ export class FileStorageService {
     }
   }
 
-  // Get CSV template
-  static getCsvTemplate(): string {
-    return [
-      this.getCsvHeader(),
-      '"example-id-1","ABC Motors","Toyota","new;used","Engine Parts;Transmission","+1234567890"',
-      '"example-id-2","XYZ Auto","Honda","new","Brake Pads;Suspension","+0987654321"'
-    ].join('\n');
+  // Set storage mode
+  public setLocalFileMode(enabled: boolean): void {
+    this.useLocalFile = enabled;
+    console.log(`Local file mode ${enabled ? 'enabled' : 'disabled'}`);
   }
 
-  // Check if file system is available
-  static isFileSystemAvailable(): boolean {
+  // Get current storage mode
+  public getStorageMode(): 'local' | 'file' | 'localStorage' {
+    if (this.useLocalFile) return 'local';
+    if (this.fileHandle) return 'file';
+    return 'localStorage';
+  }
+
+  // Get local file path
+  public getLocalFilePath(): string {
+    return '/data/contacts.csv';
+  }
+
+  // Check if File System Access API is available
+  public isFileSystemAvailable(): boolean {
     return this.isFileSystemSupported();
   }
+}
 
-  // Get current storage method
-  static getStorageMethod(): 'file' | 'localStorage' {
-    return this.isFileSystemSupported() ? 'file' : 'localStorage';
-  }
-
-  // Check if a file is currently selected
-  static hasSelectedFile(): boolean {
-    return this.fileHandle !== null;
-  }
-
-  // Get the name of the selected file
-  static getSelectedFileName(): string | null {
-    return this.fileHandle?.name || null;
-  }
-
-  // Clear localStorage and reload sample data (for testing)
-  static clearLocalStorageAndReload(): void {
-    localStorage.removeItem('WASSENDER_CONTACTS_CSV');
-    localStorage.removeItem('WASSENDER_CONTACTS_CSV_BACKUP');
-    console.log('Cleared localStorage, will reload sample data on next access');
-  }
-} 
+// Export the singleton instance
+export const fileStorageService = new FileStorageServiceImpl(); 
