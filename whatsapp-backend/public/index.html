@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Backend - QR Code</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .qr-container {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.loading {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+    </style>
+</head>
+<body>
+    <h1>WhatsApp Backend</h1>
+    <div id="status" class="status loading">Initializing...</div>
+    
+    <div id="qr-container" class="qr-container" style="display: none;">
+        <h2>Scan QR Code</h2>
+        <p>Open WhatsApp on your phone and scan this QR code to connect:</p>
+        <img id="qr-code" src="" alt="QR Code" style="max-width: 300px;">
+    </div>
+    
+    <div id="connected-container" style="display: none;">
+        <h2>✅ Connected!</h2>
+        <p>WhatsApp is now connected and ready to receive messages.</p>
+        <p>You can now use the chat management interface in your main application.</p>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        
+        const statusDiv = document.getElementById('status');
+        const qrContainer = document.getElementById('qr-container');
+        const qrCode = document.getElementById('qr-code');
+        const connectedContainer = document.getElementById('connected-container');
+        
+        socket.on('qr-code', (data) => {
+            statusDiv.textContent = 'QR Code Generated - Please Scan';
+            statusDiv.className = 'status loading';
+            qrCode.src = data.qr;
+            qrContainer.style.display = 'block';
+            connectedContainer.style.display = 'none';
+        });
+        
+        socket.on('whatsapp-ready', (data) => {
+            statusDiv.textContent = '✅ WhatsApp Connected!';
+            statusDiv.className = 'status connected';
+            qrContainer.style.display = 'none';
+            connectedContainer.style.display = 'block';
+        });
+        
+        socket.on('whatsapp-authenticated', (data) => {
+            statusDiv.textContent = '🔐 Authenticated - Connecting...';
+            statusDiv.className = 'status loading';
+        });
+        
+        socket.on('whatsapp-auth-failure', (data) => {
+            statusDiv.textContent = '❌ Authentication Failed: ' + data.error;
+            statusDiv.className = 'status disconnected';
+        });
+        
+        socket.on('whatsapp-disconnected', (data) => {
+            statusDiv.textContent = '❌ Disconnected: ' + data.reason;
+            statusDiv.className = 'status disconnected';
+            qrContainer.style.display = 'none';
+            connectedContainer.style.display = 'none';
+        });
+        
+        socket.on('connect', () => {
+            statusDiv.textContent = 'Connecting to WhatsApp...';
+            statusDiv.className = 'status loading';
+        });
+        
+        socket.on('disconnect', () => {
+            statusDiv.textContent = '❌ Disconnected from server';
+            statusDiv.className = 'status disconnected';
+        });
+    </script>
+</body>
+</html> 

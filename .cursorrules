@@ -1,0 +1,339 @@
+# AI Assistant Rules and Context
+
+## Project Overview
+This workspace contains multiple WhatsApp-related projects:
+- `mass-contact-whisper/` - A React/TypeScript app for mass messaging
+- `whatsapp-backend/` - A separate backend service
+
+
+## Coding Standards
+- Use TypeScript for new React components
+- Follow modern React patterns (hooks, functional components)
+- Use Tailwind CSS for styling when available
+- Maintain consistent file structure and naming conventions
+- Add proper error handling and loading states
+
+## File Organization
+- Keep components in dedicated folders with clear naming
+- Separate business logic from UI components
+- Use proper TypeScript types and interfaces
+- Maintain clean imports and exports
+
+## Communication Style
+- Be direct and efficient in responses
+- Provide clear explanations for code changes
+- Suggest improvements when appropriate
+- Ask clarifying questions when requirements are unclear
+
+## Project-Specific Guidelines
+- For WhatsApp-related features, prioritize user experience and real-time functionality
+- For mass messaging features, focus on data validation and user safety
+- Maintain responsive design for mobile compatibility
+- Follow security best practices for API integrations
+
+## Error Handling
+- Always include proper error boundaries
+- Provide meaningful error messages
+- Implement graceful degradation
+- Log errors appropriately for debugging
+
+## Performance Considerations
+- Optimize bundle size and loading times
+- Use proper React optimization techniques
+- Implement efficient state management
+- Consider lazy loading for large components
+
+ALWAYS REFER TO https://docs.wwebjs.dev/ - for Whatsapp web integration
+
+**WhatsApp Web Clone Backend Specification**
+
+This document outlines the complete setup for a Node.js + Express + Socket.io backend leveraging `whatsapp-web.js` to handle all media types, forwarding, and real-time communication with a React front end.
+
+---
+
+## 1. Project Structure
+
+```
+whatsapp-backend/
+├─ src/
+│  ├─ index.js          # Express + Socket.io bootstrap
+│  ├─ whatsapp.js       # whatsapp-web.js client setup
+│  ├─ handlers/
+│  │  ├─ inbound.js     # Incoming WA message handling
+│  │  ├─ outbound.js    # Outgoing socket event handlers
+│  │  └─ media.js       # Media download, classification, DataURL conversion
+│  └─ utils/
+│     └─ classify.js    # MIME type → internal message "type" mapping
+├─ package.json
+└─ .env                # Configuration: PORT, credentials, etc.
+```
+
+---
+
+## 2. whatsapp.js — Client Initialization
+
+```js
+// src/whatsapp.js
+const { Client, LocalAuth } = require('whatsapp-web.js');
+
+const client = new Client({
+  authStrategy: new LocalAuth(),
+  puppeteer: {
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  },
+  webVersionCache: {
+    type: 'remote',
+    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/latest.html'
+  }
+});
+
+module.exports = client;
+```
+
+**Key Points:**
+
+* **LocalAuth** persists sessions to avoid re-QR.
+* **Remote webVersionCache** always fetches the latest WhatsApp Web HTML.
+
+---
+
+## 3. index.js — Express & Socket.io Bootstrap
+
+```js
+// src/index.js
+require('dotenv').config();
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const client = require('./whatsapp');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+
+// Inbound message handling
+require('./handlers/inbound')(client, io);
+
+// Outbound (socket) handlers
+oi.on('connection', socket => {
+  require('./handlers/outbound')(socket, client, io);
+});
+
+// Start WhatsApp client & server
+client.initialize();
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => console.log(`Listening on ${PORT}`));
+```
+
+---
+
+## 4. classify.js — Media Type Classification
+
+```js
+// src/utils/classify.js
+module.exports = function classifyMedia(mimetype, isPtt = false) {
+  if (mimetype.startsWith('image/')) return 'image';
+  if (mimetype.startsWith('video/')) return 'video';
+  if (mimetype.startsWith('audio/')) return isPtt ? 'voice' : 'audio';
+  if (mimetype === 'image/webp')     return 'sticker';
+  return 'file';
+};
+```
+
+**Purpose:** Map raw MIME strings to front-end "type" keys.
+
+---
+
+## 5. media.js — Download & Emit Media
+
+```js
+// src/handlers/media.js
+const classify = require('../utils/classify');
+
+async function downloadAndEmit(msg, io) {
+  if (!msg.hasMedia) return false;
+
+  try {
+    const media = await msg.downloadMedia();      // Encrypted fetch + decrypt
+    if (!media?.data) throw new Error('Empty media');
+
+    const type = classify(media.mimetype, msg.isPtt);
+    const dataUrl = `data:${media.mimetype};base64,${media.data}`;
+
+    io.emit('message', {
+      id: msg.id._serialized,
+      chatId: msg.from,
+      from: msg.from,
+      timestamp: msg.timestamp,
+      type,
+      data: dataUrl,
+      filename: media.filename
+    });
+    return true;
+
+  } catch (err) {
+    console.warn(`Media download failed ${msg.id._serialized}`, err);
+    return false;
+  }
+}
+
+module.exports = { downloadAndEmit };
+```
+
+**Details:**
+
+* **`msg.downloadMedia()`** handles CDN fetch, decryption, returns Base64.
+* Classify, wrap in DataURL, emit full payload to front end.
+
+---
+
+## 6. inbound.js — Handling Incoming Messages
+
+```js
+// src/handlers/inbound.js
+const { downloadAndEmit } = require('./media');
+
+module.exports = (client, io) => {
+  client.on('qr', qr => io.emit('qr', qr));
+  client.on('ready', () => io.emit('ready'));
+
+  client.on('message', async msg => {
+    if (msg.fromMe) return;                // skip own messages
+    if (msg.isEphemeral || msg.isViewOnce) return;
+
+    const handled = await downloadAndEmit(msg, io);
+    if (handled) return;
+
+    // Fallback: text-only
+    io.emit('message', {
+      id: msg.id._serialized,
+      chatId: msg.from,
+      from: msg.from,
+      timestamp: msg.timestamp,
+      type: 'text',
+      body: msg.body
+    });
+  });
+};
+```
+
+**Notes:**
+
+* Filters out self and ephemeral.
+* Prioritizes media; else emits text.
+
+---
+
+## 7. outbound.js — Socket.io → WhatsApp API
+
+```js
+// src/handlers/outbound.js
+const { MessageMedia } = require('whatsapp-web.js');
+const { downloadAndEmit } = require('./media');
+
+module.exports = (socket, client, io) => {
+
+  // 1) Text messages
+  socket.on('sendText', async ({ chatId, text }) => {
+    const sent = await client.sendMessage(chatId, text);
+    io.emit('message', { /* mirror text payload */ });
+  });
+
+  // 2) Upload & send media
+  socket.on('sendMedia', async ({ chatId, dataUrl, filename, mimetype }) => {
+    const media = MessageMedia.fromDataURL(dataUrl, filename);
+    const sent = await client.sendMessage(chatId, media, { caption: '' });
+    await downloadAndEmit(sent, io);
+  });
+
+  // 3) Manual forward (preserve bytes)
+  socket.on('forwardMedia', async ({ originId, toChatId }) => {
+    const orig = await client.getMessageById(originId);
+    const media = await orig.downloadMedia();
+    const mm = new MessageMedia(media.mimetype, media.data, media.filename);
+    const sent = await client.sendMessage(toChatId, mm);
+    await downloadAndEmit(sent, io);
+  });
+};
+```
+
+**Highlights:**
+
+* Uses same media pipeline for uploads & forwards.
+* Emits final media through `downloadAndEmit` for consistency.
+
+---
+
+## 8. Additional Features & Error Handling
+
+* **Auth failure:**
+
+  ```js
+  client.on('auth_failure', e => io.emit('auth_failure', e));
+  ```
+* **Event logging:** log all Socket.io events for debugging.
+* **Group chat & admin:** use `GroupChat` methods for adding/removing participants, etc.
+* **Stickers:** convert to WebP via `Client` util methods.
+
+---
+
+**References:**
+
+* `Client.sendMessage()` — send text or `MessageMedia` citeturn0search0
+* `Message.downloadMedia()` — download & decrypt media citeturn0search5
+* `Message.isViewOnce`, `msg.isEphemeral` flags citeturn0search6
+* `chat.forwardMessages()` limitations citeturn0search7
+
+---
+
+## 9. Handling Unidentified Media & Edge Cases
+
+Even with classification, some messages may arrive without a clear MIME or with missing data. The following steps—drawn from the whatsapp-web.js docs—ensure your AI handles these gracefully:
+
+1. **Detect forwarded stubs**: Forwarded messages often set `msg.isForwarded === true` and `msg.hasMedia === false` despite originally containing media. To capture these:
+
+   ```js
+   if (msg.isForwarded && !msg.hasMedia) {
+     // Fetch the original via ID and redownload
+     const orig = await client.getMessageById(msg.id._serialized);
+     if (orig.hasMedia) {
+       // Reuse downloadAndEmit on orig
+       await downloadAndEmit(orig, io);
+     }
+     return;
+   }
+   ```
+
+   citeturn0search6
+
+2. **Fallback on raw data attributes**: Some messages expose encrypted `mediaKey` or ephemeral `pttForwarded` flags in `msg._data`. When `downloadMedia()` returns empty, inspect `msg._data`:
+
+   ```js
+   const raw = msg._data;
+   // raw.mediaKey, raw.directPath, raw.encFileHash may indicate a media URL
+   ```
+
+   If present, you can construct a direct CDN URL per the docs and fetch manually.
+
+3. **Thumbnail handling**: For large videos, WA provides `msg._data?.thumbnail` (base64 JPG). Emit this as `thumb` to the front end so it can render `<img src={thumb}>` placeholder while the full download completes.
+
+4. **Unknown MIME types**: When `media.mimetype` is missing or not recognized, default to `'file'` but include the raw `mimetype` in the payload so the front end can prompt downloads:
+
+   ```js
+   type = 'file';
+   io.emit('message', { ... , rawMime: media.mimetype || 'unknown' });
+   ```
+
+5. **Retry logic**: If `downloadMedia()` fails due to transient network/HEADLESS issues, implement a retry with exponential backoff:
+
+   ```js
+   for (let i=0; i<3; i++) {
+     try { return await msg.downloadMedia(); } catch (e) { await sleep(500 * 2**i); }
+   }
+   ```
+
+6. **Logging & metrics**: Track counts of unidentified media, retries, and fallback invokes. Emit monitoring events or logs so your AI can adjust parameters (e.g. increasing retry delays) over time.
+
+> By layering these doc‑driven strategies into your AI’s generation context, Cursor will produce backend code that gracefully handles even the most elusive WhatsApp media anomalies.
+

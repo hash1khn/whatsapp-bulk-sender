@@ -1,0 +1,570 @@
+import { useState, useRef } from 'react';
+import { Contact } from '@/types/contact';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
+import { useToast } from '@/hooks/use-toast';
+import { Send, Upload, X, MessageSquare, Eye, Plus, Trash2 } from 'lucide-react';
+import { generateId } from '@/lib/utils';
+import { ChatStorageService } from '@/lib/chatStorage';
+import { uploadImages } from '@/lib/cloudinary';
+
+interface Part {
+  id: string;
+  qty: string;
+  name: string;
+  number?: string;
+}
+
+interface MessageComposerProps {
+  filteredContacts: Contact[];
+  onSendComplete: (bulkMessageId: string) => void;
+  onSendStart: () => void;
+}
+
+export function MessageComposer({ filteredContacts, onSendComplete, onSendStart }: MessageComposerProps) {
+  const [messageTitle, setMessageTitle] = useState('');
+  const [make, setMake] = useState('');
+  const [model, setModel] = useState('');
+  const [year, setYear] = useState('');
+  const [vin, setVin] = useState('');
+  const [additionalDetails, setAdditionalDetails] = useState('');
+  const [parts, setParts] = useState<Part[]>([{ id: generateId(), qty: '', name: '', number: '' }]);
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [uploadedImageUrls, setUploadedImageUrls] = useState<string[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [sendProgress, setSendProgress] = useState(0);
+  const [showPreview, setShowPreview] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+
+  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files) {
+      const newFiles: File[] = [];
+      const newPreviews: string[] = [];
+
+      Array.from(files).forEach(file => {
+        if (file.type.startsWith('image/')) {
+          newFiles.push(file);
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const result = reader.result;
+            if (result && typeof result === 'string') {
+              setImagePreviews(prev => [...prev, result]);
+            }
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+
+      setImageFiles(prev => [...prev, ...newFiles]);
+      setUploadedImageUrls([]); // Clear any previously uploaded URLs
+    }
+  };
+
+  const addPart = () => {
+    setParts([...parts, { id: generateId(), qty: '', name: '', number: '' }]);
+  };
+
+  const removePart = (id: string) => {
+    setParts(parts.filter(part => part.id !== id));
+  };
+
+  const updatePart = (id: string, field: keyof Part, value: string) => {
+    setParts(parts.map(part => 
+      part.id === id ? { ...part, [field]: value } : part
+    ));
+  };
+
+  const removeImage = (index: number) => {
+    setImageFiles(imageFiles.filter((_, i) => i !== index));
+    setImagePreviews(imagePreviews.filter((_, i) => i !== index));
+    setUploadedImageUrls([]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const uploadSelectedImages = async () => {
+    if (imageFiles.length === 0) {
+      toast({
+        title: "No images selected",
+        description: "Please select images to upload first",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      const result = await uploadImages(imageFiles);
+      
+      // Store the message text
+      if (messageTitle.trim()) {
+        await fetch(`/api/gallery/${result.timestamp}/message`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ message: messageTitle.trim() })
+        });
+      }
+
+      const galleryUrl = `${window.location.origin}/gallery/${result.timestamp}`;
+      setUploadedImageUrls([galleryUrl]);
+      
+      toast({
+        title: "Upload successful",
+        description: `Successfully uploaded ${result.urls.length} images to gallery`,
+      });
+    } catch (error) {
+      console.error('Upload error:', error);
+      toast({
+        title: "Upload failed",
+        description: error instanceof Error ? error.message : "Failed to upload images. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const getFinalMessage = () => {
+    let message = `> Part Request - ${make} ${model} ${year}\n`;
+    message += `_VIN: ${vin}_\n\n`;
+    
+    // Add parts
+    parts.forEach(part => {
+      message += `${part.qty} - ${part.name}${part.number ? ` - ${part.number}` : ''}\n`;
+    });
+
+    // Add additional details if present
+    if (additionalDetails.trim()) {
+      message += `\n${additionalDetails.trim()}\n`;
+    }
+
+    if (uploadedImageUrls.length > 0) {
+      message += '\nPHOTOS HERE:\n';
+      message += uploadedImageUrls[0];
+    }
+
+    return message;
+  };
+
+  const sendToAll = async () => {
+    if (!isFormValid()) {
+      toast({
+        title: "Form incomplete",
+        description: "Please fill in all required fields and add parts.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (imageFiles.length > 0 && uploadedImageUrls.length === 0) {
+      toast({
+        title: "Images not uploaded",
+        description: "Please upload your selected images before sending",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!messageTitle.trim()) {
+      toast({
+        title: "No title",
+        description: "Please enter a title for this message campaign",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (filteredContacts.length === 0) {
+      toast({
+        title: "No contacts",
+        description: "No contacts match your current filters",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsSending(true);
+    setSendProgress(0);
+    onSendStart();
+
+    try {
+      const { sendMessage, createTextMessage } = await import('@/api/wassender');
+      const finalMessage = getFinalMessage();
+
+      for (let i = 0; i < filteredContacts.length; i++) {
+        const contact = filteredContacts[i];
+        
+        try {
+          const payload = createTextMessage(contact.whatsappNumber, finalMessage);
+          await sendMessage(payload);
+          
+          // Update progress
+          const progress = ((i + 1) / filteredContacts.length) * 100;
+          setSendProgress(progress);
+
+          toast({
+            title: "Message sent",
+            description: `Sent to ${contact.supplierName} (${contact.whatsappNumber})`,
+          });
+
+          // Wait 5 seconds before sending next message (API rate limiting)
+          if (i < filteredContacts.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+        } catch (error) {
+          console.error(`Failed to send to ${contact.whatsappNumber}:`, error);
+          toast({
+            title: "Send failed",
+            description: `Failed to send to ${contact.supplierName}`,
+            variant: "destructive",
+          });
+        }
+      }
+
+      toast({
+        title: "Bulk send complete",
+        description: `Attempted to send ${filteredContacts.length} messages`,
+      });
+
+    } catch (error) {
+      console.error('Bulk send error:', error);
+      toast({
+        title: "Send error",
+        description: "An error occurred during bulk sending",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSending(false);
+      setSendProgress(0);
+      
+      // Save the bulk message to chat storage
+      const bulkMessageId = generateId();
+      
+      try {
+        const savedBulkMessage = ChatStorageService.saveBulkMessage({
+          title: messageTitle,
+          content: getFinalMessage(),
+          recipients: filteredContacts.map(contact => contact.whatsappNumber),
+          sentAt: new Date().toISOString(),
+          status: 'completed',
+          tags: [],
+          responseCount: 0,
+          totalRecipients: filteredContacts.length
+        });
+        
+        // Create conversations for each contact
+        filteredContacts.forEach(contact => {
+          ChatStorageService.updateConversation(
+            contact.id,
+            contact.supplierName,
+            contact.whatsappNumber,
+            getFinalMessage(),
+            false,
+            savedBulkMessage.id
+          );
+        });
+        
+        onSendComplete(savedBulkMessage.id);
+      } catch (error) {
+        console.error('Failed to save bulk message:', error);
+        toast({
+          title: "Warning",
+          description: "Message sent but failed to save to chat history",
+          variant: "destructive",
+        });
+        onSendComplete(bulkMessageId);
+      }
+    }
+  };
+
+  const isFormValid = () => {
+    if (!make || !model || !year || !vin) return false;
+    if (parts.length === 0) return false;
+    if (parts.some(part => !part.qty || !part.name)) return false;
+    return true;
+  };
+
+  return (
+    <Card className="max-w-2xl mx-auto">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-left">
+          <MessageSquare className="h-5 w-5" />
+          Add Vehicle Information
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-6 pt-6">
+        {/* Campaign Title */}
+        <div className="space-y-2">
+          <h3 className="text-lg font-medium">Campaign Title</h3>
+          <Input
+            id="messageTitle"
+            placeholder="Enter a descriptive title for this request..."
+            value={messageTitle}
+            onChange={(e) => setMessageTitle(e.target.value)}
+            disabled={isSending}
+            required
+          />
+        </div>
+
+        {/* Vehicle Information Section */}
+        <div className="space-y-4">
+          <h3 className="text-lg font-medium">Vehicle Information</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="make" className="text-sm font-medium">Make *</Label>
+              <Input
+                id="make"
+                placeholder="Select or type car make"
+                value={make}
+                onChange={(e) => setMake(e.target.value)}
+                disabled={isSending}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="model" className="text-sm font-medium">Model *</Label>
+              <Input
+                id="model"
+                placeholder="e.g., Camry, X5, Mustang"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={isSending}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="year" className="text-sm font-medium">Year</Label>
+              <Input
+                id="year"
+                placeholder="2025"
+                value={year}
+                onChange={(e) => setYear(e.target.value)}
+                disabled={isSending}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="vin" className="text-sm font-medium">VIN (Optional)</Label>
+              <Input
+                id="vin"
+                placeholder="17-character VIN"
+                value={vin}
+                onChange={(e) => setVin(e.target.value)}
+                disabled={isSending}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Parts List Section */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-medium">Parts List</h3>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={addPart}
+              disabled={isSending}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              <Plus className="h-4 w-4 mr-1" />
+              Add Part
+            </Button>
+          </div>
+          
+          {parts.map((part, index) => (
+            <div key={part.id} className="space-y-4 p-4 border rounded-lg">
+              <div className="space-y-2">
+                <Label htmlFor={`part-name-${index}`} className="text-sm font-medium">Part Name *</Label>
+                <Input
+                  id={`part-name-${index}`}
+                  placeholder="e.g., Brake pads, Oil filter, Headlight assembly"
+                  value={part.name}
+                  onChange={(e) => updatePart(part.id, 'name', e.target.value)}
+                  disabled={isSending}
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor={`part-number-${index}`} className="text-sm font-medium">Part Number (Optional)</Label>
+                  <Input
+                    id={`part-number-${index}`}
+                    placeholder="OEM or aftermarket part number"
+                    value={part.number}
+                    onChange={(e) => updatePart(part.id, 'number', e.target.value)}
+                    disabled={isSending}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor={`qty-${index}`} className="text-sm font-medium">Quantity</Label>
+                  <Input
+                    id={`qty-${index}`}
+                    type="number"
+                    min="1"
+                    placeholder="1"
+                    value={part.qty}
+                    onChange={(e) => updatePart(part.id, 'qty', e.target.value)}
+                    disabled={isSending}
+                    required
+                  />
+                </div>
+              </div>
+
+              {parts.length > 1 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removePart(part.id)}
+                  disabled={isSending}
+                  className="text-red-500 hover:text-red-600"
+                >
+                  <Trash2 className="h-4 w-4 mr-1" />
+                  Remove Part
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Additional Details Section */}
+        <div className="space-y-4">
+          <h3 className="text-lg font-medium">Additional Details (Optional)</h3>
+          <Textarea
+            placeholder="Any specific requirements, brand preferences, or additional information..."
+            value={additionalDetails}
+            onChange={(e) => setAdditionalDetails(e.target.value)}
+            disabled={isSending}
+            className="min-h-[100px]"
+          />
+        </div>
+
+        {/* Photos Section */}
+        <div className="space-y-4">
+          <h3 className="text-lg font-medium">Reference Images (Optional)</h3>
+          <div className="border-2 border-dashed rounded-lg p-6">
+            <Input
+              id="image"
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={handleImageUpload}
+              disabled={isSending || isUploading}
+              ref={fileInputRef}
+              className="hidden"
+            />
+            <div className="space-y-4">
+              <div className="text-center">
+                <Button
+                  variant="ghost"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isSending || isUploading}
+                  className="w-full flex items-center justify-center gap-2"
+                >
+                  <Upload className="h-5 w-5" />
+                  Select reference images
+                </Button>
+                <p className="text-sm text-gray-500 mt-2">JPG, PNG, WEBP, HEIC (Max 5MB each)</p>
+              </div>
+
+              {imagePreviews.length > 0 && (
+                <>
+                  <div className="grid grid-cols-4 gap-4 pt-4 border-t">
+                    {imagePreviews.map((preview, index) => (
+                      <div key={index} className="relative group">
+                        <img
+                          src={preview}
+                          alt={`Preview ${index + 1}`}
+                          className="w-full h-24 object-cover rounded-md"
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 opacity-0 group-hover:opacity-100 transition-opacity rounded-md">
+                          <Button
+                            variant="destructive"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => removeImage(index)}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        {uploadedImageUrls.length > 0 && (
+                          <div className="absolute bottom-0 left-0 right-0 bg-green-500 bg-opacity-80 text-white text-xs p-1 text-center rounded-b-md">
+                            Uploaded ✓
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-4 border-t">
+                    <p className="text-sm text-gray-600">
+                      {imageFiles.length} image{imageFiles.length !== 1 ? 's' : ''} selected
+                    </p>
+                    <Button
+                      variant="default"
+                      onClick={uploadSelectedImages}
+                      disabled={isSending || isUploading || uploadedImageUrls.length > 0}
+                      className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2"
+                    >
+                      <Upload className="h-4 w-4" />
+                      {isUploading ? 'Uploading...' : uploadedImageUrls.length > 0 ? 'Uploaded' : 'Create Gallery'}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Preview and Send Buttons */}
+        <div className="flex justify-end items-center gap-4 pt-4">
+          <Button
+            variant="outline"
+            onClick={() => setShowPreview(!showPreview)}
+            disabled={!isFormValid()}
+          >
+            <Eye className="h-4 w-4 mr-2" />
+            {showPreview ? 'Hide Preview' : 'Show Preview'}
+          </Button>
+          <Button
+            onClick={sendToAll}
+            disabled={!isFormValid() || isSending || isUploading}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            <Send className="h-4 w-4 mr-2" />
+            Send to {filteredContacts.length} Contact{filteredContacts.length !== 1 ? 's' : ''}
+          </Button>
+        </div>
+
+        {showPreview && (
+          <Card className="mt-4">
+            <CardContent className="p-4">
+              <pre className="whitespace-pre-wrap font-mono text-sm">
+                {getFinalMessage()}
+              </pre>
+            </CardContent>
+          </Card>
+        )}
+
+        {isSending && (
+          <Progress value={sendProgress} className="w-full" />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
