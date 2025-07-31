@@ -9,10 +9,10 @@ export interface WhatsAppMessage {
   timestamp: Date;
   type: 'sent' | 'received' | 'image' | 'video' | 'voice' | 'audio' | 'file';
   isGroup: boolean;
-  fromMe?: boolean; // Whether the message was sent by the current user
-  ack?: number; // Read receipt status: 0=error, 1=pending, 2=server, 3=received, 4=read
-  mediaData?: string; // Base64 data URL for media/voice messages
-  filename?: string; // Filename for media messages
+  fromMe?: boolean;
+  ack?: number;
+  mediaData?: string;
+  filename?: string;
   contact?: {
     name: string;
     number: string;
@@ -44,7 +44,12 @@ interface UseWhatsAppReturn {
   markAsRead: (phoneNumber: string) => void;
   getProfilePic: (phoneNumber: string) => void;
   getContactInfo: (phoneNumber: string) => void;
-  forwardMessage: (messageId: string, to: string) => void;
+  forwardMessage: (messageId: string, to: string) => Promise<boolean>;
+  forwardingStatus: 'idle' | 'pending' | 'success' | 'error';
+  sendVoiceNote: (to: string, buffer: Uint8Array) => Promise<boolean>;
+  sendVideo: (to: string, file: File) => Promise<boolean>;
+  voiceNoteStatus: 'idle' | 'recording' | 'sending' | 'success' | 'error';
+  setVoiceNoteStatus: (status: 'idle' | 'recording' | 'sending' | 'success' | 'error') => void;
 }
 
 export const useWhatsApp = (): UseWhatsAppReturn => {
@@ -54,6 +59,8 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
   const [conversations, setConversations] = useState<WhatsAppConversation[]>([]);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [forwardingStatus, setForwardingStatus] = useState<'idle' | 'pending' | 'success' | 'error'>('idle');
+  const [voiceNoteStatus, setVoiceNoteStatus] = useState<'idle' | 'recording' | 'sending' | 'success' | 'error'>('idle');
 
   const connect = useCallback(() => {
     if (isConnecting || socket?.connected) {
@@ -127,7 +134,6 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
         console.log('📥 Received initial state:', data);
         setConversations(data.conversations);
         
-        // Convert messages map to array with duplicate prevention
         const allMessages: WhatsAppMessage[] = [];
         const seenIds = new Set<string>();
         
@@ -136,8 +142,6 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
             if (!seenIds.has(message.id)) {
               seenIds.add(message.id);
               allMessages.push(message);
-            } else {
-              console.log('🔄 Skipping duplicate message in initial state:', message.id);
             }
           });
         });
@@ -145,35 +149,28 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
       });
 
       newSocket.on('new-message', (data: { message: WhatsAppMessage, conversation: WhatsAppConversation }) => {
-        console.log('📨 New message received:', data);
         setMessages(prev => {
-          // Check for duplicates by ID and content
           const isDuplicate = prev.some(m => 
             m.id === data.message.id || 
             (m.body === data.message.body && 
              m.from === data.message.from && 
              Math.abs(new Date(m.timestamp).getTime() - new Date(data.message.timestamp).getTime()) < 1000)
           );
-          if (isDuplicate) {
-            console.log('🔄 Skipping duplicate message:', data.message.id, data.message.body);
-            return prev;
-          }
-          return [...prev, data.message];
+          return isDuplicate ? prev : [...prev, data.message];
         });
+        
         setConversations(prev => {
           const existing = prev.find(c => c.phoneNumber === data.conversation.phoneNumber);
           if (existing) {
             return prev.map(c => 
               c.phoneNumber === data.conversation.phoneNumber ? data.conversation : c
             );
-          } else {
-            return [...prev, data.conversation];
           }
+          return [...prev, data.conversation];
         });
       });
 
       newSocket.on('message-sent', (data: { message: WhatsAppMessage, conversation: WhatsAppConversation }) => {
-        console.log('📤 Message sent:', data);
         setMessages(prev => [...prev, data.message]);
         setConversations(prev => {
           const existing = prev.find(c => c.phoneNumber === data.conversation.phoneNumber);
@@ -181,14 +178,12 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
             return prev.map(c => 
               c.phoneNumber === data.conversation.phoneNumber ? data.conversation : c
             );
-          } else {
-            return [...prev, data.conversation];
           }
+          return [...prev, data.conversation];
         });
       });
 
       newSocket.on('conversation-updated', (conversation: WhatsAppConversation) => {
-        console.log('🔄 Conversation updated:', conversation);
         setConversations(prev => 
           prev.map(c => 
             c.phoneNumber === conversation.phoneNumber ? conversation : c
@@ -197,10 +192,6 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
       });
 
       newSocket.on('conversation-messages', (data: { phoneNumber: string, messages: WhatsAppMessage[] }) => {
-        console.log('💬 Conversation messages:', data);
-        console.log('💬 Media messages received:', data.messages.filter(m => m.mediaData).length);
-        console.log('💬 Message types:', data.messages.map(m => ({ id: m.id, type: m.type, hasMedia: !!m.mediaData })));
-        // Update messages for this conversation with duplicate prevention
         setMessages(prev => {
           const filtered = prev.filter(m => {
             const messageFrom = m.from.split('@')[0];
@@ -208,59 +199,57 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
             return messageFrom !== data.phoneNumber && messageTo !== data.phoneNumber;
           });
           
-          // Add new messages with duplicate prevention
           const seenIds = new Set(filtered.map(m => m.id));
           const newMessages = data.messages.filter(message => {
-            // Check for duplicates by ID and content
             const isDuplicate = filtered.some(m => 
               m.id === message.id || 
               (m.body === message.body && 
                m.from === message.from && 
                Math.abs(new Date(m.timestamp).getTime() - new Date(message.timestamp).getTime()) < 1000)
             );
-            
-            if (isDuplicate || seenIds.has(message.id)) {
-              console.log('🔄 Skipping duplicate message in conversation load:', message.id, message.body);
-              return false;
-            }
-            seenIds.add(message.id);
-            return true;
+            return !isDuplicate && !seenIds.has(message.id);
           });
           
           return [...filtered, ...newMessages];
         });
       });
 
-      newSocket.on('send-success', (data: { messageId: string }) => {
-        console.log('✅ Message sent successfully:', data.messageId);
+      newSocket.on('send-success', () => {
+        if (voiceNoteStatus === 'sending') {
+          setVoiceNoteStatus('success');
+          setTimeout(() => setVoiceNoteStatus('idle'), 2000);
+        }
       });
 
-      newSocket.on('send-error', (data: { error: string, details?: string, fileType?: string, fileName?: string }) => {
-        console.log('❌ Message send failed:', data.error);
-        if (data.details) {
-          console.log('Details:', data.details);
+      newSocket.on('send-error', () => {
+        if (voiceNoteStatus === 'sending') {
+          setVoiceNoteStatus('error');
+          setTimeout(() => setVoiceNoteStatus('idle'), 2000);
         }
-        if (data.fileType && data.fileName) {
-          console.log('File:', data.fileName, 'Type:', data.fileType);
-        }
-        // You can add toast notifications here if needed
+      });
+
+      newSocket.on('forward-success', () => {
+        setForwardingStatus('success');
+        setTimeout(() => setForwardingStatus('idle'), 2000);
+      });
+
+      newSocket.on('forward-error', () => {
+        setForwardingStatus('error');
+        setTimeout(() => setForwardingStatus('idle'), 2000);
       });
 
       newSocket.on('typing-indicator', (data: { chatId: string, isTyping: boolean }) => {
-        console.log('⌨️ Typing indicator:', data);
-        // This will be handled by the Chat component
+        // Handled by Chat component
       });
 
       newSocket.on('contact-info', (data: any) => {
-        console.log('📋 Contact info received:', data);
-        // This will be handled by the Chat component
+        // Handled by Chat component
       });
 
       newSocket.on('contact-info-error', (data: { phoneNumber: string, error: string }) => {
-        console.log('❌ Contact info error:', data);
+        // Handled by Chat component
       });
 
-      // Initialize connection
       newSocket.connect();
 
     } catch (error) {
@@ -268,7 +257,7 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
       setStatus('error');
       setIsConnecting(false);
     }
-  }, [isConnecting, socket]);
+  }, [isConnecting, socket, voiceNoteStatus]);
 
   const disconnect = useCallback(() => {
     console.log('🔌 Disconnecting...');
@@ -284,8 +273,6 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
     if (socket?.connected) {
       console.log('📤 Sending message to:', to);
       socket.emit('send-message', { to, body });
-    } else {
-      console.log('❌ Cannot send message - not connected');
     }
   }, [socket]);
 
@@ -300,8 +287,6 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
     if (socket?.connected) {
       console.log('✅ Marking as read:', phoneNumber);
       socket.emit('mark-as-read', { phoneNumber });
-      
-      // Update local state
       setConversations(prev => 
         prev.map(c => 
           c.phoneNumber === phoneNumber 
@@ -326,14 +311,77 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
     }
   }, [socket]);
 
-  const forwardMessage = useCallback((messageId: string, to: string) => {
-    if (socket?.connected) {
-      console.log('📤 Forwarding message:', messageId, 'to:', to);
-      socket.emit('manual-forward', { messageId, to });
-    }
+  const forwardMessage = useCallback(async (messageId: string, to: string): Promise<boolean> => {
+    if (!socket?.connected) return false;
+
+    setForwardingStatus('pending');
+    return new Promise((resolve) => {
+      socket.emit('manual-forward', { messageId, to }, (response: { success: boolean }) => {
+        setForwardingStatus(response.success ? 'success' : 'error');
+        setTimeout(() => setForwardingStatus('idle'), 2000);
+        resolve(response.success);
+      });
+    });
   }, [socket]);
 
-  // Cleanup on unmount
+  // Update the sendVoiceNote function in useWhatsApp.ts
+const sendVoiceNote = useCallback(async (to: string, buffer: Uint8Array): Promise<boolean> => {
+  if (!socket?.connected) return false;
+
+  setVoiceNoteStatus('sending');
+  
+  try {
+    // Convert buffer to base64 more reliably
+    const base64Data = btoa(String.fromCharCode.apply(null, Array.from(buffer)));
+    
+    return new Promise((resolve) => {
+      socket.emit('send-voice', { 
+        chatId: to, 
+        buffer: base64Data,
+        caption: ''
+      }, (response: { success: boolean, error?: string }) => {
+        if (response.success) {
+          setVoiceNoteStatus('success');
+          setTimeout(() => setVoiceNoteStatus('idle'), 2000);
+          resolve(true);
+        } else {
+          console.error('Voice note failed:', response.error);
+          setVoiceNoteStatus('error');
+          setTimeout(() => setVoiceNoteStatus('idle'), 2000);
+          resolve(false);
+        }
+      });
+    });
+  } catch (error) {
+    console.error('Voice note preparation failed:', error);
+    setVoiceNoteStatus('error');
+    setTimeout(() => setVoiceNoteStatus('idle'), 2000);
+    return false;
+  }
+}, [socket]);
+
+  const sendVideo = useCallback(async (to: string, file: File): Promise<boolean> => {
+    if (!socket?.connected) return false;
+
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        socket.emit('send-media', {
+          chatId: to,
+          dataUrl,
+          filename: file.name,
+          mimetype: file.type || 'video/mp4',
+          caption: ''
+        }, (response: { success: boolean }) => {
+          resolve(response.success);
+        });
+      };
+      reader.onerror = () => resolve(false);
+      reader.readAsDataURL(file);
+    });
+  }, [socket]);
+
   useEffect(() => {
     return () => {
       if (socket) {
@@ -356,5 +404,10 @@ export const useWhatsApp = (): UseWhatsAppReturn => {
     getProfilePic,
     getContactInfo,
     forwardMessage,
+    forwardingStatus,
+    sendVoiceNote,
+    sendVideo,
+    voiceNoteStatus,
+    setVoiceNoteStatus,
   };
-}; 
+};

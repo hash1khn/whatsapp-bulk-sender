@@ -5,7 +5,9 @@ const cors = require('cors');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
-const puppeteer = require('puppeteer'); // full puppeteer
+const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path'); // full puppeteer
 
 require('dotenv').config();
 
@@ -38,7 +40,6 @@ const seenMessageIds = new Set(); // Prevent duplicate messages
 // Clear seen message IDs periodically to prevent memory leaks
 setInterval(() => {
   seenMessageIds.clear();
-  console.log('🧹 Cleared seen message IDs cache');
 }, 60000); // Clear every minute
 
 // Track WhatsApp connection status
@@ -60,7 +61,6 @@ client.on('qr', async (qr) => {
     whatsappStatus = 'connecting';
     const qrCode = await qrcode.toDataURL(qr);
     io.emit('qr', qrCode); // Changed from 'qr-code' to 'qr' to match frontend
-    console.log('QR Code generated');
   } catch (error) {
     console.error('Error generating QR code:', error);
   }
@@ -68,29 +68,23 @@ client.on('qr', async (qr) => {
 
 // Handle WhatsApp client ready event
 client.on('ready', async () => {
-  console.log('✅ WhatsApp client is ready!');
   whatsappStatus = 'connected'; // Changed from 'ready' to 'connected'
   io.emit('whatsapp-ready');
 
   // Load existing conversations
   try {
-    console.log('📋 Loading existing conversations...');
     const chats = await client.getChats();
-    console.log(`Found ${chats.length} chats`);
 
     for (const chat of chats) {
       if (chat.isGroup) {
-        console.log(`Skipping group chat: ${chat.name}`);
         continue; // Skip group chats for now
       }
 
       const phoneNumber = chat.id._serialized.split('@')[0];
-      console.log(`Processing chat: ${phoneNumber} (${chat.name || 'No name'})`);
 
       try {
         // Get messages for this chat
         const chatMessages = await chat.fetchMessages({ limit: 10 });
-        console.log(`Found ${chatMessages.length} messages for ${phoneNumber}`);
 
         // Store all messages for this conversation
         if (!messages.has(phoneNumber)) {
@@ -112,7 +106,6 @@ client.on('ready', async () => {
 
             // Handle media messages
             if (msg.hasMedia) {
-              console.log(`📎 Processing media message: ${msg.id._serialized}`);
               try {
                 const media = await msg.downloadMedia();
 
@@ -121,7 +114,6 @@ client.on('ready', async () => {
                   mediaData = `data:${media.mimetype};base64,${media.data}`;
                   filename = media.filename;
 
-                  console.log(`📎 Media downloaded: ${media.mimetype}, ${filename}, size: ${media.data.length}`);
 
                   // Classify media type
                   if (media.mimetype.startsWith('image/')) {
@@ -143,7 +135,6 @@ client.on('ready', async () => {
                     messageBody = msg.caption || `[File: ${filename}]`;
                   }
 
-                  console.log(`📎 Media classified as: ${messageType}`);
                 } else {
                   console.log(`⚠️ Media download returned invalid data for message ${msg.id._serialized}:`, media);
                   messageBody = '[Media Message]';
@@ -187,7 +178,6 @@ client.on('ready', async () => {
           profilePicUrl = await client.getProfilePicUrl(chat.id._serialized);
           profilePics.set(phoneNumber, profilePicUrl);
         } catch (error) {
-          console.log(`⚠️ No profile picture for ${phoneNumber}: ${error.message}`);
         }
 
         conversations.set(phoneNumber, {
@@ -202,7 +192,6 @@ client.on('ready', async () => {
           profilePicUrl: profilePicUrl
         });
 
-        console.log(`✅ Added conversation: ${phoneNumber} with ${chatMessages.length} messages`);
       } catch (error) {
         console.log(`⚠️ Error processing chat ${phoneNumber}: ${error.message}`);
         // Create empty conversation for chats with errors
@@ -219,7 +208,6 @@ client.on('ready', async () => {
       }
     }
 
-    console.log(`✅ Loaded ${conversations.size} conversations`);
 
     // Send initial state to all connected clients
     io.emit('initial-state', {
@@ -233,30 +221,25 @@ client.on('ready', async () => {
 });
 
 client.on('authenticated', () => {
-  console.log('WhatsApp client authenticated');
   whatsappStatus = 'connecting';
   io.emit('whatsapp-authenticated', { status: 'authenticated' });
 });
 
 client.on('auth_failure', (msg) => {
-  console.log('WhatsApp authentication failed:', msg);
   whatsappStatus = 'disconnected';
   io.emit('whatsapp-auth-failure', { error: msg });
 });
 
 client.on('disconnected', (reason) => {
-  console.log('WhatsApp client disconnected:', reason);
   whatsappStatus = 'disconnected';
   io.emit('whatsapp-disconnected', { reason });
 });
 
 // Handle incoming messages from WhatsApp
 client.on('message', async (message) => {
-  console.log('📨 New WhatsApp message received:', message.body);
 
   // Skip messages from ourselves
   if (message.fromMe) {
-    console.log('📨 Skipping own message');
     return;
   }
 
@@ -325,7 +308,6 @@ client.on('message', async (message) => {
 
   // Prevent duplicate messages
   if (seenMessageIds.has(message.id._serialized)) {
-    console.log('🔄 Skipping duplicate message:', message.id._serialized);
     return;
   }
   seenMessageIds.add(message.id._serialized);
@@ -357,7 +339,6 @@ client.on('message', async (message) => {
     conversation.messages.push(messageData);
   }
 
-  console.log(`✅ Updated conversation: ${phoneNumber} with new message (type: ${messageType}, hasMedia: ${!!mediaData})`);
 
   // Broadcast to all connected clients
   io.emit('new-message', {
@@ -374,7 +355,6 @@ client.on('message', async (message) => {
 
 // Handle messages we send (message_create event)
 client.on('message_create', async (message) => {
-  console.log('📤 Message we sent:', message.body);
 
   // Only handle messages we sent
   if (!message.fromMe) {
@@ -470,7 +450,6 @@ client.on('message_create', async (message) => {
     conversation.messages.push(messageData);
   }
 
-  console.log(`✅ Updated conversation: ${phoneNumber} with sent message (type: ${messageType}, hasMedia: ${!!mediaData})`);
 
   // Broadcast to all connected clients
   io.emit('new-message', {
@@ -481,7 +460,6 @@ client.on('message_create', async (message) => {
 
 // Handle message sending
 io.on('connection', (socket) => {
-  console.log('🔌 Client connected:', socket.id);
 
   // Send current WhatsApp status to new client
   if (whatsappStatus === 'connected') {
@@ -499,7 +477,6 @@ io.on('connection', (socket) => {
   // Handle sending messages
   socket.on('send-message', async (data) => {
     try {
-      console.log('📤 Sending message to:', data.to);
 
       // Ensure the phone number has the @c.us suffix
       const phoneNumberWithSuffix = data.to.includes('@c.us') ? data.to : `${data.to}@c.us`;
@@ -561,74 +538,99 @@ io.on('connection', (socket) => {
   });
 
   // Handle voice note sending
-  socket.on('send-voice', async (data) => {
-    try {
-      console.log('🎤 Sending voice note to:', data.chatId);
+  // Update the send-voice handler in index.js
+// Update the send-voice handler in index.js
+// Update the send-voice handler in index.js
+socket.on('send-voice', async (data, callback) => {
+  let tempFilePath = path.join(__dirname, 'temp_voice.ogg');
+  
+  try {
+    const phoneNumberWithSuffix = data.chatId.includes('@c.us') ? data.chatId : `${data.chatId}@c.us`;
 
-      const phoneNumberWithSuffix = data.chatId.includes('@c.us') ? data.chatId : `${data.chatId}@c.us`;
-      const media = new MessageMedia('audio/ogg; codecs=opus', data.buffer, 'voice.ogg');
-
-      const sentMessage = await client.sendMessage(phoneNumberWithSuffix, media, {
-        ptt: true // Mark as voice note
-      });
-
-      const messageData = {
-        id: sentMessage.id._serialized,
-        from: sentMessage.from,
-        to: sentMessage.to,
-        body: '[Voice Message]',
-        timestamp: new Date(sentMessage.timestamp * 1000),
-        type: 'voice',
-        isGroup: false,
-        fromMe: true,
-        ack: sentMessage._data?.ack || 0,
-        mediaData: `data:audio/ogg;base64,${data.buffer}`,
-        filename: 'voice.ogg',
-        contact: {
-          name: data.chatId,
-          number: data.chatId
-        }
-      };
-
-      // Store sent message
-      if (!messages.has(data.chatId)) {
-        messages.set(data.chatId, []);
-      }
-      messages.get(data.chatId).push(messageData);
-
-      // Update conversation
-      if (!conversations.has(data.chatId)) {
-        conversations.set(data.chatId, {
-          id: data.chatId,
-          phoneNumber: data.chatId,
-          contactName: data.chatId,
-          lastMessage: '[Voice Message]',
-          lastMessageTime: new Date(sentMessage.timestamp * 1000).toISOString(),
-          messageCount: 1,
-          unreadCount: 0,
-          messages: [messageData]
-        });
-      } else {
-        const conversation = conversations.get(data.chatId);
-        conversation.lastMessage = '[Voice Message]';
-        conversation.lastMessageTime = new Date(sentMessage.timestamp * 1000).toISOString();
-        conversation.messageCount += 1;
-        conversation.messages.push(messageData);
-      }
-
-      // Broadcast to all clients
-      io.emit('message-sent', {
-        message: messageData,
-        conversation: conversations.get(data.chatId)
-      });
-
-      socket.emit('send-success', { messageId: sentMessage.id._serialized });
-
-    } catch (error) {
-      console.error('❌ Error sending voice note:', error);
-      socket.emit('send-error', { error: error.message });
+    // Convert base64 to buffer
+    const buffer = Buffer.from(data.buffer, 'base64');
+    
+    // Validate audio data
+    if (buffer.length === 0) {
+      throw new Error('Empty audio buffer received');
     }
-  });
+
+    // Write to temporary file
+    await fs.promises.writeFile(tempFilePath, buffer);
+    
+    // Verify file was written
+    const stats = await fs.promises.stat(tempFilePath);
+    if (stats.size === 0) {
+      throw new Error('Failed to write audio file');
+    }
+
+    // Create media with explicit MIME type
+    const media = MessageMedia.fromFilePath(tempFilePath);
+    media.mimetype = 'audio/ogg; codecs=opus';
+
+    // Send with longer timeout
+    const sentMessage = await client.sendMessage(phoneNumberWithSuffix, media, {
+      sendAudioAsVoice: true,
+      caption: data.caption || ''
+    });
+
+
+    // Create response data
+    const messageData = {
+      id: sentMessage.id._serialized,
+      from: sentMessage.from,
+      to: sentMessage.to,
+      body: '[Voice Message]',
+      timestamp: new Date(sentMessage.timestamp * 1000),
+      type: 'voice',
+      isGroup: false,
+      fromMe: true,
+      mediaData: `data:audio/ogg;base64,${data.buffer}`,
+      filename: 'voice-message.ogg',
+      contact: {
+        name: data.chatId,
+        number: data.chatId
+      }
+    };
+
+    // Update conversation state
+    if (!messages.has(data.chatId)) {
+      messages.set(data.chatId, []);
+    }
+    messages.get(data.chatId).push(messageData);
+
+    // Broadcast update
+    io.emit('new-message', {
+      message: messageData,
+      conversation: conversations.get(data.chatId) || {
+        id: data.chatId,
+        phoneNumber: data.chatId,
+        contactName: data.chatId,
+        lastMessage: '[Voice Message]',
+        lastMessageTime: messageData.timestamp.toISOString(),
+        messageCount: 1,
+        unreadCount: 0,
+        messages: [messageData]
+      }
+    });
+
+    callback({ success: true });
+  } catch (error) {
+    console.error('❌ Voice note error:', error);
+    callback({ 
+      success: false, 
+      error: error.message,
+      stack: error.stack
+    });
+  } finally {
+    // Clean up temp file
+    try {
+      if (tempFilePath) await fs.promises.unlink(tempFilePath);
+    } catch (cleanupError) {
+      console.error('Error cleaning up temp file:', cleanupError);
+    }
+  }
+});
 
   // Handle getting conversation messages
   socket.on('get-conversation', async (data) => {
@@ -728,8 +730,6 @@ io.on('connection', (socket) => {
             : new Date().toISOString();
         }
 
-        console.log(`📤 Sending ${conversationMessages.length} messages to frontend for ${phoneNumber}`);
-        console.log(`📤 Media messages: ${conversationMessages.filter(m => m.mediaData).length}`);
 
         socket.emit('conversation-messages', {
           phoneNumber: phoneNumber,
@@ -838,223 +838,134 @@ io.on('connection', (socket) => {
         isTyping: false
       });
     } catch (error) {
-      console.log(`❌ Error sending stop typing state: ${error.message}`);
     }
   });
 
   // Handle media sending
-  socket.on('send-media', async (data) => {
-    try {
-      console.log('📤 Sending media to:', data.chatId, 'Type:', data.mimetype, 'Size:', data.dataUrl.length);
-
-      const phoneNumberWithSuffix = data.chatId.includes('@c.us') ? data.chatId : `${data.chatId}@c.us`;
-
-      // Create MessageMedia from dataUrl
-      // Extract base64 data from dataUrl
-      const base64Data = data.dataUrl.split(',')[1];
-      const media = new MessageMedia(data.mimetype, base64Data, data.filename);
-
-      const sentMessage = await client.sendMessage(phoneNumberWithSuffix, media, {
-        caption: data.caption || ''
-      });
-
-      // Classify media type for sent messages
-      let messageType = 'sent';
-      let messageBody = data.caption || '[Media Message]';
-
-      if (data.mimetype.startsWith('image/')) {
-        messageType = 'image';
-        messageBody = data.caption || '[Image]';
-      } else if (data.mimetype.startsWith('video/')) {
-        messageType = 'video';
-        messageBody = data.caption || '[Video]';
-      } else if (data.mimetype.startsWith('audio/')) {
-        messageType = 'audio';
-        messageBody = data.caption || '[Audio]';
-      } else {
-        messageType = 'file';
-        messageBody = data.caption || `[File: ${data.filename}]`;
-      }
-
-      const messageData = {
-        id: sentMessage.id._serialized,
-        from: sentMessage.from,
-        to: sentMessage.to,
-        body: messageBody,
-        timestamp: new Date(sentMessage.timestamp * 1000),
-        type: messageType,
-        isGroup: false,
-        fromMe: true,
-        ack: sentMessage._data?.ack || 0,
-        mediaData: data.dataUrl,
-        filename: data.filename,
-        contact: {
-          name: data.chatId,
-          number: data.chatId
-        }
-      };
-
-      // Store sent message
-      if (!messages.has(data.chatId)) {
-        messages.set(data.chatId, []);
-      }
-      messages.get(data.chatId).push(messageData);
-
-      // Update conversation
-      if (!conversations.has(data.chatId)) {
-        conversations.set(data.chatId, {
-          id: data.chatId,
-          phoneNumber: data.chatId,
-          contactName: data.chatId,
-          lastMessage: data.caption || '[Media Message]',
-          lastMessageTime: new Date(sentMessage.timestamp * 1000).toISOString(),
-          messageCount: 1,
-          unreadCount: 0,
-          messages: [messageData]
-        });
-      } else {
-        const conversation = conversations.get(data.chatId);
-        conversation.lastMessage = data.caption || '[Media Message]';
-        conversation.lastMessageTime = new Date(sentMessage.timestamp * 1000).toISOString();
-        conversation.messageCount += 1;
-        conversation.messages.push(messageData);
-      }
-
-      // Broadcast to all clients
-      io.emit('message-sent', {
-        message: messageData,
-        conversation: conversations.get(data.chatId)
-      });
-
-      socket.emit('send-success', { messageId: sentMessage.id._serialized });
-
-    } catch (error) {
-      console.error('❌ Error sending media:', error);
-      socket.emit('send-error', {
-        error: error.message,
-        details: 'Failed to send media file. Please check file type and size.',
-        fileType: data.mimetype,
-        fileName: data.filename
-      });
-    }
-  });
+  socket.on('send-media', async (data, callback) => {
+  try {
+    const phoneNumberWithSuffix = data.chatId.includes('@c.us') ? data.chatId : `${data.chatId}@c.us`;
+    const base64Data = data.dataUrl.split(',')[1];
+    const media = new MessageMedia(data.mimetype, base64Data, data.filename);
+    
+    await client.sendMessage(phoneNumberWithSuffix, media, {
+      caption: data.caption || ''
+    });
+    
+    callback({ success: true });
+  } catch (error) {
+    console.error('Error sending media:', error);
+    callback({ success: false, error: error.message });
+  }
+});
 
   // Handle manual message forwarding (download + re-send)
-  socket.on('manual-forward', async (data) => {
-    try {
-      console.log('📤 Manual forwarding message to:', data.to, 'from message:', data.messageId);
+  socket.on('manual-forward', async (data, callback) => {
+  try {
 
-      // Ensure the phone number has the @c.us suffix
-      const phoneNumberWithSuffix = data.to.includes('@c.us') ? data.to : `${data.to}@c.us`;
+    // Ensure the phone number has the @c.us suffix
+    const phoneNumberWithSuffix = data.to.includes('@c.us') ? data.to : `${data.to}@c.us`;
 
-      // Get the original message
-      const originalMessage = await client.getMessageById(data.messageId);
-      if (!originalMessage) {
-        throw new Error('Original message not found');
+    // Get the original message
+    const originalMessage = await client.getMessageById(data.messageId);
+    if (!originalMessage) {
+      throw new Error('Original message not found');
+    }
+
+    let sentMessage;
+    let media = null;
+
+    // Check if it's a media message
+    if (originalMessage.hasMedia) {
+
+      // Download the original media
+      media = await originalMessage.downloadMedia();
+      if (!media || !media.data) {
+        throw new Error('Failed to download media');
       }
 
-      let sentMessage;
+      // Create new MessageMedia object
+      const mediaPayload = new MessageMedia(
+        media.mimetype,
+        media.data,
+        media.filename
+      );
 
-      // Check if it's a media message
-      if (originalMessage.hasMedia) {
-        console.log('📎 Forwarding media message');
-
-        // Download the original media
-        const media = await originalMessage.downloadMedia();
-        if (!media || !media.data) {
-          throw new Error('Failed to download media');
-        }
-
-        // Create new MessageMedia object
-        const mediaPayload = new MessageMedia(
-          media.mimetype,
-          media.data,
-          media.filename
-        );
-
-        // Send as fresh media message
-        sentMessage = await client.sendMessage(phoneNumberWithSuffix, mediaPayload, {
-          caption: originalMessage.caption || undefined
-        });
-
-        console.log('✅ Media message forwarded successfully');
-      } else {
-        console.log('📝 Forwarding text message');
-
-        // Send as text message
-        sentMessage = await client.sendMessage(phoneNumberWithSuffix, originalMessage.body);
-
-        console.log('✅ Text message forwarded successfully');
-      }
-
-      // Create message data for frontend
-      const messageData = {
-        id: sentMessage.id._serialized,
-        from: sentMessage.from,
-        to: sentMessage.to,
-        body: originalMessage.hasMedia ? (originalMessage.caption || '[Media Message]') : originalMessage.body,
-        timestamp: new Date(sentMessage.timestamp * 1000),
-        // classify forwarded media by its mimetype
-        type: (() => {
-          if (!originalMessage.hasMedia) return 'sent';
-          if (media.mimetype.startsWith('image/')) return 'image';
-          if (media.mimetype.startsWith('video/')) return 'video';
-          if (media.mimetype.startsWith('audio/')) return originalMessage.isPtt ? 'voice' : 'audio';
-          return 'file';
-        })(),
-        isGroup: false,
-        fromMe: true,
-        mediaData: originalMessage.hasMedia ? `data:${media.mimetype};base64,${media.data}` : null,
-        filename: originalMessage.hasMedia ? media.filename : null,
-        contact: {
-          name: data.to,
-          number: data.to
-        }
-      };
-
-      // Store the forwarded message
-      if (!messages.has(data.to)) {
-        messages.set(data.to, []);
-      }
-      messages.get(data.to).push(messageData);
-
-      // Update conversation
-      if (!conversations.has(data.to)) {
-        conversations.set(data.to, {
-          id: data.to,
-          phoneNumber: data.to,
-          contactName: data.to,
-          lastMessage: messageData.body,
-          lastMessageTime: messageData.timestamp.toISOString(),
-          messageCount: 1,
-          unreadCount: 0,
-          messages: [messageData]
-        });
-      } else {
-        const conversation = conversations.get(data.to);
-        conversation.lastMessage = messageData.body;
-        conversation.lastMessageTime = messageData.timestamp.toISOString();
-        conversation.messageCount += 1;
-        conversation.messages.push(messageData);
-      }
-
-      // Broadcast to all clients
-      io.emit('new-message', {
-        message: messageData,
-        conversation: conversations.get(data.to)
+      // Send as fresh media message
+      sentMessage = await client.sendMessage(phoneNumberWithSuffix, mediaPayload, {
+        caption: originalMessage.caption || undefined
       });
 
-      socket.emit('forward-success', { messageId: sentMessage.id._serialized });
+    } else {
 
-    } catch (error) {
-      console.error('❌ Error forwarding message:', error);
-      socket.emit('forward-error', { error: error.message });
+      // Send as text message
+      sentMessage = await client.sendMessage(phoneNumberWithSuffix, originalMessage.body);
+
     }
-  });
 
-  socket.on('disconnect', () => {
-    console.log('🔌 Client disconnected:', socket.id);
-  });
+    // Create message data for frontend
+    const messageData = {
+      id: sentMessage.id._serialized,
+      from: sentMessage.from,
+      to: sentMessage.to,
+      body: originalMessage.hasMedia ? (originalMessage.caption || '[Media Message]') : originalMessage.body,
+      timestamp: new Date(sentMessage.timestamp * 1000),
+      type: (() => {
+        if (!originalMessage.hasMedia) return 'sent';
+        if (media.mimetype.startsWith('image/')) return 'image';
+        if (media.mimetype.startsWith('video/')) return 'video';
+        if (media.mimetype.startsWith('audio/')) return originalMessage.isPtt ? 'voice' : 'audio';
+        return 'file';
+      })(),
+      isGroup: false,
+      fromMe: true,
+      mediaData: originalMessage.hasMedia ? `data:${media.mimetype};base64,${media.data}` : null,
+      filename: originalMessage.hasMedia ? media.filename : null,
+      contact: {
+        name: data.to,
+        number: data.to
+      }
+    };
+
+    // Store the forwarded message
+    if (!messages.has(data.to)) {
+      messages.set(data.to, []);
+    }
+    messages.get(data.to).push(messageData);
+
+    // Update conversation
+    if (!conversations.has(data.to)) {
+      conversations.set(data.to, {
+        id: data.to,
+        phoneNumber: data.to,
+        contactName: data.to,
+        lastMessage: messageData.body,
+        lastMessageTime: messageData.timestamp.toISOString(),
+        messageCount: 1,
+        unreadCount: 0,
+        messages: [messageData]
+      });
+    } else {
+      const conversation = conversations.get(data.to);
+      conversation.lastMessage = messageData.body;
+      conversation.lastMessageTime = messageData.timestamp.toISOString();
+      conversation.messageCount += 1;
+      conversation.messages.push(messageData);
+    }
+
+    // Broadcast to all clients
+    io.emit('new-message', {
+      message: messageData,
+      conversation: conversations.get(data.to)
+    });
+
+    callback({ success: true });
+
+  } catch (error) {
+    console.error('❌ Error forwarding message:', error);
+    callback({ success: false, error: error.message });
+  }
+});
 });
 
 // API Routes
@@ -1091,8 +1002,6 @@ const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
   console.log(`WhatsApp backend server running on port ${PORT}`);
-  console.log(`WebSocket server ready for connections`);
-  console.log(`CORS enabled for: http://localhost:5173, http://127.0.0.1:5173, http://localhost:8080, http://127.0.0.1:8080`);
 
   // Initialize WhatsApp client
   client.initialize();

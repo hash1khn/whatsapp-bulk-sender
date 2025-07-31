@@ -6,21 +6,25 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger } from '@/components/ui/dialog';
 import { useWhatsApp } from '@/hooks/useWhatsApp';
 import type { WhatsAppMessage } from '@/hooks/useWhatsApp';
-import { Search, Send, MoreVertical, Phone, Video, ArrowLeft, Paperclip, Mic, MicOff } from 'lucide-react';
+import { Search, Send, MoreVertical, Phone, Video, ArrowLeft, Paperclip, Mic, MicOff, ForwardIcon } from 'lucide-react';
 import { VoiceNotePlayer } from '@/components/VoiceNotePlayer';
 
 const Chat: React.FC = () => {
-  const { 
+  const {
     socket,
-    status, 
-    conversations: whatsappConversations, 
+    status,
+    conversations: whatsappConversations,
     messages,
-    qrCode, 
-    connect, 
+    qrCode,
+    connect,
     sendMessage,
     markAsRead,
     getConversation,
     getProfilePic,
+    sendVoiceNote,
+    voiceNoteStatus,
+    sendVideo,
+    setVoiceNoteStatus,
     getContactInfo,
     forwardMessage
   } = useWhatsApp();
@@ -40,7 +44,7 @@ const Chat: React.FC = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [showForwardModal, setShowForwardModal] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<WhatsAppMessage | null>(null);
-  
+
   // Refs for auto-scrolling
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -102,106 +106,138 @@ const Chat: React.FC = () => {
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    console.log('📎 File upload handler triggered');
-    
-    const file = event.target.files?.[0];
-    console.log('📎 Selected file:', file);
-    
-    if (!file) {
-      console.log('📎 No file selected');
-      return;
-    }
-    
-    if (!selectedConversation) {
-      console.log('📎 No conversation selected');
-      alert('Please select a conversation first');
-      return;
-    }
-    
+  const file = event.target.files?.[0];
+  if (!file || !selectedConversation) return;
+
+  try {
     setIsUploading(true);
     
-    try {
-      console.log('📎 Uploading file:', file.name, file.type, file.size);
-      
-      // Check file size (WhatsApp limit is ~16MB)
-      const maxSize = 16 * 1024 * 1024; // 16MB
-      if (file.size > maxSize) {
-        alert(`File too large. Maximum size is 16MB. Your file is ${(file.size / 1024 / 1024).toFixed(1)}MB`);
-        setIsUploading(false);
-        return;
+    if (file.type.startsWith('video/')) {
+      const success = await sendVideo(selectedConversation.phoneNumber, file);
+      if (!success) {
+        alert('Failed to send video');
       }
-      
-      // Convert file to base64
+    } else {
       const reader = new FileReader();
       reader.onload = (e) => {
         const dataUrl = e.target?.result as string;
         if (socket?.connected) {
           socket.emit('send-media', {
             chatId: selectedConversation.phoneNumber,
-            dataUrl: dataUrl,
+            dataUrl,
             filename: file.name,
             mimetype: file.type || 'application/octet-stream',
             caption: messageInput || ''
           });
           setMessageInput('');
-          console.log('📤 Media sent to backend');
-        } else {
-          alert('Not connected to WhatsApp. Please check your connection.');
         }
-        setIsUploading(false);
-      };
-      reader.onerror = (error) => {
-        console.error('Error reading file:', error);
-        alert('Error reading file. Please try again.');
-        setIsUploading(false);
       };
       reader.readAsDataURL(file);
-    } catch (error) {
-      console.error('Error uploading file:', error);
-      alert('Error uploading file. Please try again.');
-      setIsUploading(false);
     }
-    
-    // Reset the input so the same file can be selected again
+  } catch (error) {
+    console.error('Error uploading file:', error);
+    alert('Error uploading file');
+  } finally {
+    setIsUploading(false);
     event.target.value = '';
-  };
+  }
+};
 
   const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/ogg; codecs=opus' });
-      
-      recorder.ondataavailable = async (event) => {
-        if (event.data.size > 0 && selectedConversation) {
-          const buffer = await event.data.arrayBuffer();
-          if (socket?.connected) {
-            socket.emit('send-voice', {
-              chatId: selectedConversation.phoneNumber,
-              buffer: Array.from(new Uint8Array(buffer))
-            });
-          }
-        }
-      };
-      
-      recorder.onstop = () => {
-        stream.getTracks().forEach(track => track.stop());
-      };
-      
-      setMediaRecorder(recorder);
-      recorder.start();
-      setIsRecording(true);
-    } catch (error) {
-      console.error('Error starting recording:', error);
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorder && isRecording) {
+  try {
+    // Stop any existing recording
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
+      mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    }
+
+    // Get microphone access
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: 16000,
+        channelCount: 1
+      }
+    });
+
+    // Find supported MIME type
+    const mimeType = [
+      'audio/webm;codecs=opus',
+      'audio/ogg;codecs=opus', 
+      'audio/webm',
+      'audio/ogg'
+    ].find(type => MediaRecorder.isTypeSupported(type));
+
+    if (!mimeType) {
+      throw new Error('No supported audio format available');
+    }
+
+    const recorder = new MediaRecorder(stream, { 
+      mimeType,
+      audioBitsPerSecond: 64000
+    });
+
+    const audioChunks: BlobPart[] = [];
+    
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        audioChunks.push(event.data);
+      }
+    };
+    
+    recorder.onstop = async () => {
+      try {
+        const audioBlob = new Blob(audioChunks, { type: mimeType });
+        
+        // Ensure blob isn't empty
+        if (audioBlob.size === 0) {
+          throw new Error('Empty audio recording');
+        }
+
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        await sendVoiceNote(selectedConversation.phoneNumber, new Uint8Array(arrayBuffer));
+      } catch (error) {
+        console.error('Error processing recording:', error);
+        alert(`Failed to send voice note: ${error.message}`);
+      } finally {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+
+    recorder.start(1000);
+    setMediaRecorder(recorder);
+    setIsRecording(true);
+    setVoiceNoteStatus('recording');
+  } catch (error) {
+    console.error('Recording error:', error);
+    alert(`Microphone error: ${error.message}`);
+    setVoiceNoteStatus('error');
+    setTimeout(() => setVoiceNoteStatus('idle'), 2000);
+  }
+};
+
+const stopRecording = () => {
+  if (mediaRecorder && isRecording) {
+    try {
+      // Stop the recorder first
+      mediaRecorder.stop();
+      
+      // Then stop all tracks
+      if (mediaRecorder.stream) {
+        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      }
+      
       setIsRecording(false);
       setMediaRecorder(null);
+      setVoiceNoteStatus('sending');
+    } catch (error) {
+      console.error('Error stopping recording:', error);
+      setVoiceNoteStatus('error');
+      setTimeout(() => setVoiceNoteStatus('idle'), 2000);
     }
-  };
+  }
+};
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -233,22 +269,22 @@ const Chat: React.FC = () => {
       const messageTo = m.to ? m.to.split('@')[0] : '';
       return messageFrom === phoneNumber || messageTo === phoneNumber;
     });
-    
+
     // Remove duplicates based on content and timestamp
     const uniqueMessages = conversationMessages.reduce((acc, message) => {
-      const isDuplicate = acc.some(m => 
-        m.id === message.id || 
-        (m.body === message.body && 
-         m.from === message.from && 
-         Math.abs(new Date(m.timestamp).getTime() - new Date(message.timestamp).getTime()) < 1000)
+      const isDuplicate = acc.some(m =>
+        m.id === message.id ||
+        (m.body === message.body &&
+          m.from === message.from &&
+          Math.abs(new Date(m.timestamp).getTime() - new Date(message.timestamp).getTime()) < 1000)
       );
-      
+
       if (!isDuplicate) {
         acc.push(message);
       }
       return acc;
     }, [] as WhatsAppMessage[]);
-    
+
     return uniqueMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   };
 
@@ -322,9 +358,8 @@ const Chat: React.FC = () => {
                 return (
                   <div
                     key={conversation.id}
-                    className={`p-3 border-b border-gray-100 cursor-pointer hover:bg-gray-50 ${
-                      selectedConversation?.id === conversation.id ? 'bg-blue-50' : ''
-                    }`}
+                    className={`p-3 border-b border-gray-100 cursor-pointer hover:bg-gray-50 ${selectedConversation?.id === conversation.id ? 'bg-blue-50' : ''
+                      }`}
                     onClick={() => {
                       setSelectedConversation(conversation);
                       // Load conversation messages
@@ -338,8 +373,8 @@ const Chat: React.FC = () => {
                     <div className="flex items-center gap-3">
                       {/* Avatar */}
                       {conversation.profilePicUrl ? (
-                        <img 
-                          src={conversation.profilePicUrl} 
+                        <img
+                          src={conversation.profilePicUrl}
                           alt={conversation.contactName || conversation.phoneNumber}
                           className="w-12 h-12 rounded-full object-cover"
                           onError={(e) => {
@@ -352,7 +387,7 @@ const Chat: React.FC = () => {
                       <div className={`w-12 h-12 bg-green-500 rounded-full flex items-center justify-center text-white font-semibold ${conversation.profilePicUrl ? 'hidden' : ''}`}>
                         {conversation.phoneNumber.charAt(0).toUpperCase()}
                       </div>
-                      
+
                       {/* Conversation Info */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
@@ -369,9 +404,9 @@ const Chat: React.FC = () => {
                           {conversation.lastMessage}
                         </p>
                         <p className="text-xs text-gray-400 mt-1">
-                          {new Date(conversation.lastMessageTime).toLocaleTimeString([], { 
-                            hour: '2-digit', 
-                            minute: '2-digit' 
+                          {new Date(conversation.lastMessageTime).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit'
                           })}
                         </p>
                       </div>
@@ -389,7 +424,7 @@ const Chat: React.FC = () => {
             <>
               {/* Chat Header */}
               <div className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between flex-shrink-0">
-                <div 
+                <div
                   className="flex items-center gap-3 cursor-pointer hover:bg-gray-50 p-2 rounded-lg transition-colors"
                   onClick={() => {
                     if (selectedConversation) {
@@ -400,8 +435,8 @@ const Chat: React.FC = () => {
                   }}
                 >
                   {selectedConversation.profilePicUrl ? (
-                    <img 
-                      src={selectedConversation.profilePicUrl} 
+                    <img
+                      src={selectedConversation.profilePicUrl}
                       alt={selectedConversation.contactName || selectedConversation.phoneNumber}
                       className="w-10 h-10 rounded-full object-cover"
                       onError={(e) => {
@@ -441,7 +476,7 @@ const Chat: React.FC = () => {
                 <div className="space-y-3">
                   {(() => {
                     const conversationMessages = getConversationMessages(selectedConversation.phoneNumber);
-                    
+
                     return conversationMessages.length === 0 ? (
                       <div className="text-center text-gray-500 py-8">
                         <div className="text-2xl mb-2">💬</div>
@@ -455,7 +490,7 @@ const Chat: React.FC = () => {
                           // In WhatsApp, messages from the current user have fromMe=true
                           // Messages from others have fromMe=false or undefined
                           const isSentByMe = message.fromMe === true || message.type === 'sent';
-                          
+
                           // Debug logging (only for media messages)
                           if (message.mediaData) {
                             console.log(`Media message ${index}:`, {
@@ -464,124 +499,123 @@ const Chat: React.FC = () => {
                               hasMediaData: !!message.mediaData
                             });
                           }
-                          
+
                           return (
                             <div
                               key={index}
                               className={`flex ${isSentByMe ? 'justify-end' : 'justify-start'}`}
                             >
                               <div
-                                className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                                  isSentByMe
+                                className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${isSentByMe
                                     ? 'bg-green-500 text-white'
                                     : 'bg-white text-gray-800 shadow-sm'
-                                }`}
+                                  }`}
                               >
-                              {/* Show caption/body text if it exists and is not just a placeholder */}
-                              {message.body && message.body !== '[Media Message]' && message.body !== '[Image]' && message.body !== '[Video]' && message.body !== '[Audio]' && message.body !== '[Voice Message]' && !message.body.startsWith('[File:') && (
-                                <p className="text-sm mb-2">{message.body}</p>
-                              )}
-                            
-                                                           {/* Media Display */}
-                               {message.mediaData && (
-                                 <div className="mt-2">
-                                   {message.type === 'image' && (
-                                     <img 
-                                       src={message.mediaData} 
-                                       alt={message.filename || 'Image'} 
-                                       className="max-w-xs rounded-lg shadow-sm"
-                                     />
-                                   )}
-                                   
-                                   {message.type === 'video' && (
-                                     <div className="relative">
-                                       <video 
-                                         src={message.mediaData} 
-                                         controls 
-                                         className="max-w-xs rounded-lg shadow-sm"
-                                         preload="metadata"
-                                         onError={(e) => console.error('Video load error:', e)}
-                                         onLoadStart={() => console.log('Video loading started:', message.filename)}
-                                         onLoadedData={() => console.log('Video loaded successfully:', message.filename)}
-                                       />
-                                       {message.filename && (
-                                         <div className="text-xs text-gray-500 mt-1">
-                                           {message.filename}
-                                         </div>
-                                       )}
-                                     </div>
-                                   )}
-                                   
-                                   {message.type === 'voice' && (
-                                     <VoiceNotePlayer 
-                                       src={message.mediaData} 
-                                       className="w-full"
-                                     />
-                                   )}
-                                   
-                                   {message.type === 'audio' && (
-                                     <VoiceNotePlayer 
-                                       src={message.mediaData} 
-                                       className="w-full"
-                                     />
-                                   )}
-                                   
-                                   {message.type === 'file' && (
-                                     <a 
-                                       href={message.mediaData} 
-                                       download={message.filename || 'file'}
-                                       className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-                                     >
-                                       <span className="text-2xl">📄</span>
-                                       <div className="flex-1 min-w-0">
-                                         <div className="font-medium text-sm truncate">
-                                           {message.filename || 'File'}
-                                         </div>
-                                         <div className="text-xs text-gray-500">
-                                           Click to download
-                                         </div>
-                                       </div>
-                                     </a>
-                                   )}
-                                 </div>
-                               )}
-                            <div className={`flex items-center justify-between mt-1 ${
-                              isSentByMe ? 'text-green-100' : 'text-gray-500'
-                            }`}>
-                              <p className="text-xs">
-                                {new Date(message.timestamp).toLocaleTimeString([], { 
-                                  hour: '2-digit', 
-                                  minute: '2-digit' 
-                                })}
-                              </p>
-                              <div className="flex items-center gap-1">
-                                {isSentByMe && message.ack !== undefined && (
-                                  <>
-                                    {message.ack >= 2 && <span className="text-xs">✓</span>}
-                                    {message.ack >= 3 && <span className="text-xs">✓</span>}
-                                    {message.ack >= 4 && <span className="text-xs text-blue-300">✓</span>}
-                                  </>
+                                {/* Show caption/body text if it exists and is not just a placeholder */}
+                                {message.body && message.body !== '[Media Message]' && message.body !== '[Image]' && message.body !== '[Video]' && message.body !== '[Audio]' && message.body !== '[Voice Message]' && !message.body.startsWith('[File:') && (
+                                  <p className="text-sm mb-2">{message.body}</p>
                                 )}
-                                {/* Forward button for received messages */}
-                                {!isSentByMe && (
-                                  <button
-                                    onClick={() => {
-                                      console.log('Forwarding message:', message.id);
-                                      setForwardingMessage(message);
-                                      setShowForwardModal(true);
-                                    }}
-                                    className="text-xs opacity-60 hover:opacity-100 transition-opacity"
-                                    title="Forward message"
-                                  >
-                                    ↪️
-                                  </button>
+
+                                {/* Media Display */}
+                                {message.mediaData && (
+                                  <div className="mt-2">
+                                    {message.type === 'image' && (
+                                      <img
+                                        src={message.mediaData}
+                                        alt={message.filename || 'Image'}
+                                        className="max-w-xs rounded-lg shadow-sm"
+                                      />
+                                    )}
+
+                                    {message.type === 'video' && (
+                                      <div className="relative">
+                                        <video
+                                          src={message.mediaData}
+                                          controls
+                                          className="max-w-xs rounded-lg shadow-sm"
+                                          preload="metadata"
+                                          onError={(e) => console.error('Video load error:', e)}
+                                          onLoadStart={() => console.log('Video loading started:', message.filename)}
+                                          onLoadedData={() => console.log('Video loaded successfully:', message.filename)}
+                                        />
+                                        {message.filename && (
+                                          <div className="text-xs text-gray-500 mt-1">
+                                            {message.filename}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {message.type === 'voice' && (
+                                      <VoiceNotePlayer
+                                        src={message.mediaData}
+                                        className="w-full"
+                                      />
+                                    )}
+
+                                    {message.type === 'audio' && (
+                                      <VoiceNotePlayer
+                                        src={message.mediaData}
+                                        className="w-full"
+                                      />
+                                    )}
+
+                                    {message.type === 'file' && (
+                                      <a
+                                        href={message.mediaData}
+                                        download={message.filename || 'file'}
+                                        className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                                      >
+                                        <span className="text-2xl">📄</span>
+                                        <div className="flex-1 min-w-0">
+                                          <div className="font-medium text-sm truncate">
+                                            {message.filename || 'File'}
+                                          </div>
+                                          <div className="text-xs text-gray-500">
+                                            Click to download
+                                          </div>
+                                        </div>
+                                      </a>
+                                    )}
+                                  </div>
                                 )}
+                                <div className={`flex items-center justify-between mt-1 ${isSentByMe ? 'text-green-100' : 'text-gray-500'
+                                  }`}>
+                                  <p className="text-xs">
+                                    {new Date(message.timestamp).toLocaleTimeString([], {
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
+                                  </p>
+                                  <div className="flex items-center gap-1">
+                                    {isSentByMe && message.ack !== undefined && (
+                                      <>
+                                        {message.ack >= 2 && <span className="text-xs">✓</span>}
+                                        {message.ack >= 3 && <span className="text-xs">✓</span>}
+                                        {message.ack >= 4 && <span className="text-xs text-blue-300">✓</span>}
+                                      </>
+                                    )}
+                                    {/* Forward button for received messages */}
+                                    {(
+                                      <button
+                                        onClick={() => {
+                                          console.log('Forwarding message:', message.id);
+                                          setForwardingMessage(message);
+                                          setShowForwardModal(true);
+                                        }}
+                                        className="text-xs opacity-60 hover:opacity-100 transition-opacity"
+                                        title="Forward message"
+                                      >
+                                                        <ForwardIcon className="h-4 w-4" />
+
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
                             </div>
-                            </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
                         {/* Scroll target for auto-scroll */}
                         <div ref={messagesEndRef} />
                       </>
@@ -594,56 +628,56 @@ const Chat: React.FC = () => {
               <div className="bg-white border-t border-gray-200 p-4 flex-shrink-0">
                 <div className="flex items-center gap-3">
                   {/* File Upload Button */}
-                                      <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      className="cursor-pointer"
-                      disabled={isUploading}
-                      onClick={() => {
-                        console.log('📎 File upload button clicked');
-                        // Create a temporary file input
-                        const input = document.createElement('input');
-                        input.type = 'file';
-                        input.accept = '*/*';
-                        input.onchange = (e) => {
-                          const target = e.target as HTMLInputElement;
-                          if (target.files && target.files[0]) {
-                            handleFileUpload(e as any);
-                          }
-                        };
-                        input.click();
-                      }}
-                    >
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="cursor-pointer"
+                    disabled={isUploading}
+                    onClick={() => {
+                      console.log('📎 File upload button clicked');
+                      // Create a temporary file input
+                      const input = document.createElement('input');
+                      input.type = 'file';
+                      input.accept = '*/*';
+                      input.onchange = (e) => {
+                        const target = e.target as HTMLInputElement;
+                        if (target.files && target.files[0]) {
+                          handleFileUpload(e as any);
+                        }
+                      };
+                      input.click();
+                    }}
+                  >
                     {isUploading ? (
                       <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
                     ) : (
                       <Paperclip className="h-4 w-4" />
                     )}
                   </Button>
-                  
+
                   <Input
                     value={messageInput}
                     onChange={(e) => {
                       setMessageInput(e.target.value);
-                      
+
                       // Send typing indicator
                       if (selectedConversation && e.target.value.length > 0) {
                         if (socket?.connected) {
                           socket.emit('typing', { chatId: selectedConversation.phoneNumber });
                         }
-                        
+
                         // Clear existing timeout
                         if (typingTimeout) {
                           clearTimeout(typingTimeout);
                         }
-                        
+
                         // Set new timeout to stop typing indicator
                         const timeout = setTimeout(() => {
                           if (socket?.connected) {
                             socket.emit('stop-typing', { chatId: selectedConversation.phoneNumber });
                           }
                         }, 1000);
-                        
+
                         setTypingTimeout(timeout);
                       }
                     }}
@@ -656,10 +690,10 @@ const Chat: React.FC = () => {
                       }
                     }}
                   />
-                  
+
                   {/* Voice Recording Button */}
                   {!messageInput.trim() && (
-                    <Button 
+                    <Button
                       onClick={isRecording ? stopRecording : startRecording}
                       variant={isRecording ? "destructive" : "ghost"}
                       size="sm"
@@ -667,8 +701,8 @@ const Chat: React.FC = () => {
                       {isRecording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
                     </Button>
                   )}
-                  
-                  <Button 
+
+                  <Button
                     onClick={() => handleSendMessage(selectedConversation.phoneNumber)}
                     disabled={!messageInput.trim()}
                     size="sm"
@@ -686,8 +720,8 @@ const Chat: React.FC = () => {
                 <h2 className="text-2xl font-semibold text-gray-900 mb-2">Welcome to WhatsApp</h2>
                 <p className="text-gray-600 mb-4">Select a conversation to start messaging</p>
                 <p className="text-sm text-gray-500">
-                  {whatsappConversations.length === 0 
-                    ? "No conversations yet. Send a message to start chatting!" 
+                  {whatsappConversations.length === 0
+                    ? "No conversations yet. Send a message to start chatting!"
                     : `${whatsappConversations.length} conversation${whatsappConversations.length !== 1 ? 's' : ''} available`
                   }
                 </p>
@@ -708,8 +742,8 @@ const Chat: React.FC = () => {
               {/* Profile Picture */}
               <div className="flex justify-center">
                 {contactInfo.profilePicUrl ? (
-                  <img 
-                    src={contactInfo.profilePicUrl} 
+                  <img
+                    src={contactInfo.profilePicUrl}
                     alt={contactInfo.name}
                     className="w-24 h-24 rounded-full object-cover"
                   />
@@ -745,7 +779,7 @@ const Chat: React.FC = () => {
                 {contactInfo.isBusiness && contactInfo.business && (
                   <div className="space-y-3">
                     <h4 className="font-medium text-sm text-gray-700">Business Profile</h4>
-                    
+
                     {contactInfo.business.description && (
                       <div>
                         <h5 className="text-xs font-medium text-gray-600">Description</h5>
@@ -770,9 +804,9 @@ const Chat: React.FC = () => {
                     {contactInfo.business.website && (
                       <div>
                         <h5 className="text-xs font-medium text-gray-600">Website</h5>
-                        <a 
-                          href={contactInfo.business.website} 
-                          target="_blank" 
+                        <a
+                          href={contactInfo.business.website}
+                          target="_blank"
                           rel="noopener noreferrer"
                           className="text-sm text-blue-600 hover:underline"
                         >
@@ -784,7 +818,7 @@ const Chat: React.FC = () => {
                     {contactInfo.business.email && (
                       <div>
                         <h5 className="text-xs font-medium text-gray-600">Email</h5>
-                        <a 
+                        <a
                           href={`mailto:${contactInfo.business.email}`}
                           className="text-sm text-blue-600 hover:underline"
                         >
@@ -800,7 +834,6 @@ const Chat: React.FC = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Forward Message Modal */}
       {showForwardModal && forwardingMessage && (
         <Dialog open={showForwardModal} onOpenChange={setShowForwardModal}>
           <DialogContent className="sm:max-w-md">
@@ -811,42 +844,102 @@ const Chat: React.FC = () => {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
-              {/* Message Preview */}
+              {/* Message Preview with better media handling */}
               <div className="p-3 bg-gray-50 rounded-lg">
                 <p className="text-sm text-gray-600 mb-2">Message to forward:</p>
-                <p className="text-sm">{forwardingMessage.body}</p>
-                {forwardingMessage.mediaData && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    📎 Media message ({forwardingMessage.type})
-                  </p>
+                {forwardingMessage.mediaData ? (
+                  <div className="mb-2">
+                    {forwardingMessage.type === 'image' && (
+                      <img
+                        src={forwardingMessage.mediaData}
+                        alt="Forwarding media"
+                        className="max-w-xs rounded-lg"
+                      />
+                    )}
+                    {forwardingMessage.type === 'video' && (
+                      <video
+                        src={forwardingMessage.mediaData}
+                        controls
+                        className="max-w-xs rounded-lg"
+                      />
+                    )}
+                    {['voice', 'audio'].includes(forwardingMessage.type) && (
+                      <VoiceNotePlayer
+                        src={forwardingMessage.mediaData}
+                        className="w-full"
+                      />
+                    )}
+                    {forwardingMessage.type === 'file' && (
+                      <div className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg">
+                        <span className="text-2xl">📄</span>
+                        <div>
+                          <div className="font-medium text-sm">
+                            {forwardingMessage.filename || 'File'}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {forwardingMessage.type}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {forwardingMessage.body && forwardingMessage.body !== '[Media Message]' && (
+                      <p className="text-sm mt-2">{forwardingMessage.body}</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm">{forwardingMessage.body}</p>
                 )}
               </div>
-              
-              {/* Contact Selection */}
+
+              {/* Enhanced Contact Selection with Search */}
               <div className="space-y-2">
-                <label className="text-sm font-medium">Select Contact:</label>
-                <select 
-                  className="w-full p-2 border border-gray-300 rounded-md"
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      forwardMessage(forwardingMessage.id, e.target.value);
-                      setShowForwardModal(false);
-                      setForwardingMessage(null);
-                    }
-                  }}
-                >
-                  <option value="">Choose a contact...</option>
-                  {whatsappConversations.map((conv) => (
-                    <option key={conv.phoneNumber} value={conv.phoneNumber}>
-                      {conv.contactName} ({conv.phoneNumber})
-                    </option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Input
+                    placeholder="Search contacts..."
+                    className="pl-10"
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+                <div className="max-h-60 overflow-y-auto border rounded-md">
+                  {whatsappConversations
+                    .filter(conv =>
+                      conv.phoneNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                      (conv.contactName && conv.contactName.toLowerCase().includes(searchTerm.toLowerCase()))
+                    )
+                    .map((conv) => (
+                      <div
+                        key={conv.phoneNumber}
+                        className="p-3 hover:bg-gray-50 cursor-pointer flex items-center gap-3"
+                        onClick={() => {
+                          forwardMessage(forwardingMessage.id, conv.phoneNumber);
+                          setShowForwardModal(false);
+                          setForwardingMessage(null);
+                        }}
+                      >
+                        {conv.profilePicUrl ? (
+                          <img
+                            src={conv.profilePicUrl}
+                            alt={conv.contactName}
+                            className="w-8 h-8 rounded-full"
+                          />
+                        ) : (
+                          <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white">
+                            {conv.contactName?.charAt(0) || conv.phoneNumber.charAt(0)}
+                          </div>
+                        )}
+                        <div>
+                          <p className="font-medium">{conv.contactName || conv.phoneNumber}</p>
+                          <p className="text-xs text-gray-500">{conv.phoneNumber}</p>
+                        </div>
+                      </div>
+                    ))}
+                </div>
               </div>
             </div>
             <DialogFooter>
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 onClick={() => {
                   setShowForwardModal(false);
                   setForwardingMessage(null);
