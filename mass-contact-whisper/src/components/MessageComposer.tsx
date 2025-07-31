@@ -11,6 +11,7 @@ import { Send, Upload, X, MessageSquare, Eye, Plus, Trash2, ArrowRight } from 'l
 import { generateId } from '@/lib/utils';
 import { ChatStorageService } from '@/lib/chatStorage';
 import { uploadImages } from '@/lib/cloudinary';
+import { sendMessage, createTextMessage } from '@/api/wassender';
 
 interface Part {
   id: string;
@@ -188,26 +189,89 @@ export function MessageComposer({
     }
   };
 
-  const getFinalMessage = () => {
-    let message = `> Part Request - ${messageData.make} ${messageData.model} ${messageData.year}\n`;
-    message += `_VIN: ${messageData.vin}_\n\n`;
-    
-    // Add parts
-    messageData.parts.forEach(part => {
-      message += `${part.qty} - ${part.name}${part.number ? ` - ${part.number}` : ''}\n`;
+  // Add smart placeholder logic for template
+  function applySmartPlaceholderLogic(raw, data) {
+    let lines = raw.split('\n');
+    // VIN: replace with Not provided if missing
+    lines = lines.map(line =>
+      line.replace(/\[VIN\]/g, () => {
+        const val = data.vin;
+        return val && val.trim() ? val : 'Not provided';
+      })
+    );
+    // PART NUMBER: remove placeholder and preceding ' - ' if missing
+    lines = lines.map(line =>
+      line.replace(/( - )?\[PART NUMBER\]/g, (match, sep) => {
+        const val = data.partNumber;
+        return val && val.trim() ? (sep || '') + val : '';
+      })
+    );
+    // DETAILS: remove line if missing
+    lines = lines.filter(line => {
+      if (line.includes('[DETAILS]')) {
+        const val = data.additionalDetails;
+        return val && val.trim();
+      }
+      return true;
     });
-
-    // Add additional details if present
-    if (messageData.additionalDetails.trim()) {
-      message += `\n${messageData.additionalDetails.trim()}\n`;
+    lines = lines.map(line =>
+      line.replace(/\[DETAILS\]/g, () => data.additionalDetails || '')
+    );
+    // GALLERY: remove 'Photos Here:' and [GALLERY] line if missing
+    if (!data.gallery || !data.gallery.trim()) {
+      lines = lines.filter((line, idx, arr) => {
+        if (line.includes('[GALLERY]')) return false;
+        if (line.trim().toLowerCase().startsWith('photos here:')) {
+          if (arr[idx + 1] && arr[idx + 1].includes('[GALLERY]')) return false;
+        }
+        return true;
+      });
+    } else {
+      lines = lines.map(line =>
+        line.replace(/\[GALLERY\]/g, data.gallery)
+      );
     }
+    // [SPACE]: always output a blank line
+    lines = lines.flatMap(line =>
+      line.includes('[SPACE]') ? [''] : [line]
+    );
+    // Remove any lines that are now empty or just whitespace, except for [SPACE] lines
+    lines = lines.filter((line, idx, arr) => {
+      if (line === '' && (idx === 0 || arr[idx - 1] === '')) return false;
+      return true;
+    });
+    return lines.join('\n');
+  }
 
-    if (messageData.uploadedImageUrls.length > 0) {
-      message += '\nPHOTOS HERE:\n';
-      message += messageData.uploadedImageUrls[0];
+  const getFinalMessage = () => {
+    // Try to load template from localStorage
+    const template = localStorage.getItem('massContactTemplate') || `> Part Request - [MAKE] [MODEL] [YEAR]\n_VIN: [VIN]_\n\n[QTY] - [PART NAME] - [PART NUMBER]\n[QTY] - [PART NAME] - [PART NUMBER]\n\n[DETAILS]\n\nPhotos Here:\n[GALLERY]`;
+    // Build data object for placeholders
+    const data = {
+      MAKE: messageData.make,
+      MODEL: messageData.model,
+      YEAR: messageData.year,
+      VIN: messageData.vin,
+      QTY: messageData.parts[0]?.qty || '',
+      'PART NAME': messageData.parts[0]?.name || '',
+      'PART NUMBER': messageData.parts[0]?.number || '',
+      DETAILS: messageData.additionalDetails,
+      GALLERY: messageData.uploadedImageUrls?.[0] || '',
+      gallery: messageData.uploadedImageUrls?.[0] || '',
+      partNumber: messageData.parts[0]?.number || '',
+      additionalDetails: messageData.additionalDetails,
+    };
+    // If there are multiple parts, build lines for each
+    let msg = template;
+    if (template.includes('[QTY]') && messageData.parts.length > 1) {
+      // Replace the first [QTY] - [PART NAME] - [PART NUMBER] line with all parts
+      msg = msg.replace(/\*?\s*\[QTY\].*\[PART NAME\].*\[PART NUMBER\].*/g, () =>
+        messageData.parts.map(part =>
+          `* ${part.qty} - ${part.name}${part.number ? ' - ' + part.number : ''}`
+        ).join('\n')
+      );
     }
-
-    return message;
+    return applySmartPlaceholderLogic(msg, data);
   };
 
   const sendToAll = async () => {
@@ -252,7 +316,6 @@ export function MessageComposer({
     onSendStart();
 
     try {
-      const { sendMessage, createTextMessage } = await import('@/api/wassender');
       const finalMessage = getFinalMessage();
 
       for (let i = 0; i < filteredContacts.length; i++) {
@@ -346,8 +409,7 @@ export function MessageComposer({
       messageData.make.trim() !== '' &&
       messageData.model.trim() !== '' &&
       messageData.parts.length > 0 &&
-      messageData.parts.every(part => part.name.trim() !== '' && part.qty.trim() !== '') &&
-      messageData.uploadedImageUrls.length > 0 // Require at least one uploaded image
+      messageData.parts.every(part => part.name.trim() !== '' && part.qty.trim() !== '')
     );
   };
 

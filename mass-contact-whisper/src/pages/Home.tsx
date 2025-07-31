@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Contact, CONDITION_OPTIONS } from '@/types/contact';
 import { useContacts } from '@/hooks/useContacts';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,10 @@ import { MessageComposer } from '@/components/MessageComposer';
 import { useNavigate } from 'react-router-dom';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { StagedContactsTable } from '@/components/StagedContactsTable';
+import { ApiKeyModal } from '@/components/ApiKeyModal';
+import { sendMessage, createTextMessage } from '@/api/wassender';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Progress } from '@/components/ui/progress';
 
 // Define interfaces for message data
 interface Part {
@@ -63,6 +67,11 @@ export function Home() {
   });
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [showSendProgress, setShowSendProgress] = useState(false);
+  const [sendStatuses, setSendStatuses] = useState([]);
+  const [sending, setSending] = useState(false);
+  const stopRequested = useRef(false);
 
   // Apply filters whenever filters or contacts change
   useEffect(() => {
@@ -204,6 +213,99 @@ export function Home() {
     return message;
   };
 
+  // Add smart placeholder logic for template (duplicate from MessageComposer)
+  function applySmartPlaceholderLogic(raw, data) {
+    let lines = raw.split('\n');
+    // VIN: replace with Not provided if missing
+    lines = lines.map(line =>
+      line.replace(/\[VIN\]/g, () => {
+        const val = data.vin;
+        return val && val.trim() ? val : 'Not provided';
+      })
+    );
+    // PART NUMBER: remove placeholder and preceding ' - ' if missing
+    lines = lines.map(line =>
+      line.replace(/( - )?\[PART NUMBER\]/g, (match, sep) => {
+        const val = data.partNumber;
+        return val && val.trim() ? (sep || '') + val : '';
+      })
+    );
+    // DETAILS: remove line if missing
+    lines = lines.filter(line => {
+      if (line.includes('[DETAILS]')) {
+        const val = data.additionalDetails;
+        return val && val.trim();
+      }
+      return true;
+    });
+    lines = lines.map(line =>
+      line.replace(/\[DETAILS\]/g, () => data.additionalDetails || '')
+    );
+    // GALLERY: remove 'Photos Here:' and [GALLERY] line if missing
+    if (!data.gallery || !data.gallery.trim()) {
+      lines = lines.filter((line, idx, arr) => {
+        if (line.includes('[GALLERY]')) return false;
+        if (line.trim().toLowerCase().startsWith('photos here:')) {
+          if (arr[idx + 1] && arr[idx + 1].includes('[GALLERY]')) return false;
+        }
+        return true;
+      });
+    } else {
+      lines = lines.map(line =>
+        line.replace(/\[GALLERY\]/g, data.gallery)
+      );
+    }
+    // [SPACE]: always output a blank line
+    lines = lines.flatMap(line =>
+      line.includes('[SPACE]') ? [''] : [line]
+    );
+    // Remove any lines that are now empty or just whitespace, except for [SPACE] lines
+    lines = lines.filter((line, idx, arr) => {
+      if (line === '' && (idx === 0 || arr[idx - 1] === '')) return false;
+      return true;
+    });
+    return lines.join('\n');
+  }
+
+  // Helper to build contact status list
+  const buildContactStatuses = () => filteredContacts.filter(contact => selectedContacts.has(contact.id)).map(contact => ({
+    id: contact.id,
+    name: contact.supplierName,
+    number: contact.whatsappNumber,
+    status: 'pending',
+    errorMsg: '',
+  }));
+
+  // Send logic for modal
+  const startSending = async () => {
+    setSending(true);
+    stopRequested.current = false;
+    const contacts = buildContactStatuses();
+    setSendStatuses(contacts);
+    for (let i = 0; i < contacts.length; i++) {
+      if (stopRequested.current) {
+        setSendStatuses(prev => prev.map((c, idx) => idx >= i ? { ...c, status: 'stopped' } : c));
+        break;
+      }
+      setSendStatuses(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'sending' } : c));
+      try {
+        await sendMessage(createTextMessage(contacts[i].number, getFinalMessage()));
+        setSendStatuses(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'sent' } : c));
+      } catch (error) {
+        setSendStatuses(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'error', errorMsg: error?.message || 'Error' } : c));
+      }
+      if (i < contacts.length - 1) {
+        await new Promise(res => setTimeout(res, 5000)); // 5 second delay
+      }
+    }
+    setSending(false);
+  };
+
+  const handleStop = () => {
+    stopRequested.current = true;
+    setSending(false);
+  };
+
   const VehicleMakeCell = ({ makes }: { makes: string[] }) => {
     const [isExpanded, setIsExpanded] = useState(false);
     const displayCount = 2; // Number of makes to show initially
@@ -296,8 +398,71 @@ export function Home() {
     );
   };
 
+  // In the Preview & Send step, use this logic for the preview message
+  const getPreviewMessage = () => {
+    const template = localStorage.getItem('massContactTemplate') || `> Part Request - [MAKE] [MODEL] [YEAR]\n_VIN: [VIN]_\n\n[QTY] - [PART NAME] - [PART NUMBER]\n[QTY] - [PART NAME] - [PART NUMBER]\n\n[DETAILS]\n\nPhotos Here:\n[GALLERY]`;
+    const data = {
+      MAKE: messageData.make,
+      MODEL: messageData.model,
+      YEAR: messageData.year,
+      VIN: messageData.vin,
+      QTY: messageData.parts[0]?.qty || '',
+      'PART NAME': messageData.parts[0]?.name || '',
+      'PART NUMBER': messageData.parts[0]?.number || '',
+      DETAILS: messageData.additionalDetails,
+      GALLERY: messageData.uploadedImageUrls?.[0] || '',
+      gallery: messageData.uploadedImageUrls?.[0] || '',
+      partNumber: messageData.parts[0]?.number || '',
+      additionalDetails: messageData.additionalDetails,
+    };
+    let msg = template;
+    if (template.includes('[QTY]') && messageData.parts.length > 1) {
+      msg = msg.replace(/\*?\s*\[QTY\].*\[PART NAME\].*\[PART NUMBER\].*/g, () =>
+        messageData.parts.map(part =>
+          `* ${part.qty} - ${part.name}${part.number ? ' - ' + part.number : ''}`
+        ).join('\n')
+      );
+    }
+    return applySmartPlaceholderLogic(msg, data);
+  };
+
   return (
     <div className="min-h-screen bg-background">
+      <ApiKeyModal isOpen={showApiKeyModal} onApiKeySet={() => setShowApiKeyModal(false)} onClose={() => setShowApiKeyModal(false)} />
+      <Dialog open={showSendProgress} onOpenChange={open => { if (!open) setShowSendProgress(false); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Sending Messages Progress</DialogTitle>
+          </DialogHeader>
+          <div className="mb-4">
+            <Progress value={sendStatuses.filter(c => c.status === 'sent').length / (sendStatuses.length || 1) * 100} />
+            <div className="text-sm mt-2">{sendStatuses.filter(c => c.status === 'sent').length} / {sendStatuses.length} sent</div>
+          </div>
+          <div className="max-h-60 overflow-y-auto border rounded p-2 mb-4">
+            {sendStatuses.map((c, idx) => (
+              <div key={c.id} className="flex items-center gap-2 py-1 border-b last:border-b-0">
+                <span className="font-medium w-32">{c.name}</span>
+                <span className="font-mono text-xs w-36">{c.number}</span>
+                <span className="text-xs">
+                  {c.status === 'pending' && <span className="text-gray-500">Pending</span>}
+                  {c.status === 'sending' && <span className="text-blue-600">Sending...</span>}
+                  {c.status === 'sent' && <span className="text-green-600">Sent</span>}
+                  {c.status === 'error' && <span className="text-red-600">Error: {c.errorMsg}</span>}
+                  {c.status === 'stopped' && <span className="text-yellow-600">Stopped</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2 justify-end">
+            {sending ? (
+              <Button variant="destructive" onClick={handleStop}>STOP</Button>
+            ) : (
+              <Button onClick={startSending} disabled={sendStatuses.length === 0}>Start Sending</Button>
+            )}
+            <Button variant="outline" onClick={() => setShowSendProgress(false)} disabled={sending}>Close</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <div className="container mx-auto p-6 space-y-6">
         {/* Header */}
         <Card>
@@ -310,21 +475,19 @@ export function Home() {
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
-                  onClick={() => navigate('/contacts')}
-                  className="flex items-center gap-2"
-                >
-                  <Users className="h-4 w-4" />
-                  Manage Contacts
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="outline"
                   onClick={() => navigate('/chat')}
                   className="flex items-center gap-2"
                 >
                   <MessageCircle className="h-4 w-4" />
                   Chat Management
                   <ArrowRight className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => setShowApiKeyModal(true)}
+                  className="flex items-center gap-2"
+                >
+                  API Key & Status
                 </Button>
               </div>
             </div>
@@ -624,10 +787,8 @@ export function Home() {
           {currentStep === 3 && (
             <Button
               onClick={() => {
-                handleSendStart();
-                // Trigger send functionality from MessageComposer
-                const finalMessage = getFinalMessage();
-                // TODO: Implement send functionality here
+                setSendStatuses(buildContactStatuses());
+                setShowSendProgress(true);
               }}
               className="flex items-center gap-2 ml-auto bg-blue-600 hover:bg-blue-700 text-white"
             >

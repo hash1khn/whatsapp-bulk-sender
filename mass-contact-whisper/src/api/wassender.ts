@@ -103,3 +103,23 @@ export function addManualResponse(
   
   return message;
 }
+
+// Check Wasender API status
+export async function checkApiStatus(): Promise<any> {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error('API key not found. Please set your Wassender API key.');
+  }
+  try {
+    const response = await axios.get(`${CONFIG.WASSENDER_API_BASE}/status`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Error checking API status:', error);
+    throw error;
+  }
+}

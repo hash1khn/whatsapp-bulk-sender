@@ -1,7 +1,7 @@
 // Configuration for API keys and other sensitive data
 export const CONFIG = {
   // API Key - stored in localStorage for security
-  WASSENDER_API_KEY: '022e9b3b5a432544cb3bf737c90bec632027c1ee82419007a7974456ca60cea5',
+  WASSENDER_API_KEY: '8596a054e2dfef4a13bdb1c6a22cbdccadd2c7cba4415283dbe8477241e32ebb',
   
   // API Base URL
   WASSENDER_API_BASE: 'https://wasenderapi.com/api',
