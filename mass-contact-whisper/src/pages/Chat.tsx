@@ -1,13 +1,29 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger } from '@/components/ui/dialog';
-import { useWhatsApp } from '@/hooks/useWhatsApp';
-import type { WhatsAppMessage } from '@/hooks/useWhatsApp';
-import { Search, Send, MoreVertical, Phone, Video, ArrowLeft, Paperclip, Mic, MicOff, ForwardIcon } from 'lucide-react';
-import { VoiceNotePlayer } from '@/components/VoiceNotePlayer';
+import type React from "react"
+
+import { useState, useEffect, useRef, useMemo, useCallback } from "react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { useWhatsApp } from "@/hooks/useWhatsApp"
+import type { WhatsAppMessage } from "@/hooks/useWhatsApp"
+import {
+  Search,
+  Send,
+  MoreVertical,
+  Phone,
+  Video,
+  Mic,
+  MicOff,
+  ForwardIcon,
+  Users,
+  Building2,
+  CheckCheck,
+  Check,
+} from "lucide-react"
+import { VoiceNotePlayer } from "@/components/VoiceNotePlayer"
+import { MediaUploader } from "@/components/MediaUploader"
+import { MessageForwarder } from "@/components/MessageForwarder"
 
 const Chat: React.FC = () => {
   const {
@@ -26,289 +42,393 @@ const Chat: React.FC = () => {
     sendVideo,
     setVoiceNoteStatus,
     getContactInfo,
-    forwardMessage
-  } = useWhatsApp();
+    forwardMessage,
+  } = useWhatsApp()
 
-  const [selectedConversation, setSelectedConversation] = useState<any>(null);
-  const [messageInput, setMessageInput] = useState('');
-  const [showQrDialog, setShowQrDialog] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [showContactInfo, setShowContactInfo] = useState(false);
-  const [contactInfo, setContactInfo] = useState<any>(null);
-  const [isTyping, setIsTyping] = useState(false);
-  const [typingTimeout, setTypingTimeout] = useState<NodeJS.Timeout | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
-  const [justOpenedChat, setJustOpenedChat] = useState(false);
-  const [seenMessageIds] = useState(new Set<string>());
-  const [isUploading, setIsUploading] = useState(false);
-  const [showForwardModal, setShowForwardModal] = useState(false);
-  const [forwardingMessage, setForwardingMessage] = useState<WhatsAppMessage | null>(null);
+  const [selectedConversation, setSelectedConversation] = useState<any>(null)
+  const [messageInput, setMessageInput] = useState("")
+  const [showQrDialog, setShowQrDialog] = useState(false)
+  const [searchTerm, setSearchTerm] = useState("")
+  const [showContactInfo, setShowContactInfo] = useState(false)
+  const [contactInfo, setContactInfo] = useState<any>(null)
+  const [isTyping, setIsTyping] = useState(false)
+  const [typingTimeout, setTypingTimeout] = useState<NodeJS.Timeout | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
+  const [justOpenedChat, setJustOpenedChat] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [showForwardModal, setShowForwardModal] = useState(false)
+  const [forwardingMessage, setForwardingMessage] = useState<WhatsAppMessage | null>(null)
+  const [showGroupChats, setShowGroupChats] = useState(true)
 
-  // Refs for auto-scrolling
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const chatContainerRef = useRef<HTMLDivElement>(null);
+  // Add staging states
+  const [stagingMedia, setStagingMedia] = useState<{
+    file: File | null
+    preview: string | null
+    type: "image" | "video" | "audio" | "file" | null
+    caption: string
+  } | null>(null)
+  const [showStagingModal, setShowStagingModal] = useState(false)
 
-  // Auto-scroll to bottom when messages change or conversation changes
+  // Refs for auto-scrolling and performance
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const chatContainerRef = useRef<HTMLDivElement>(null)
+  const virtualizedRef = useRef<HTMLDivElement>(null)
+
+  // Memoized filtered conversations with business name support
+  const filteredConversations = useMemo(() => {
+    return whatsappConversations
+      .filter((conversation) => {
+        const matchesSearch =
+          conversation.phoneNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          (conversation.contactName && conversation.contactName.toLowerCase().includes(searchTerm.toLowerCase())) ||
+          (conversation.businessName && conversation.businessName.toLowerCase().includes(searchTerm.toLowerCase()))
+
+        const matchesFilter = showGroupChats || !conversation.isGroup
+
+        return matchesSearch && matchesFilter
+      })
+      .sort((a, b) => {
+        // Sort by last message time, most recent first
+        return new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime()
+      })
+  }, [whatsappConversations, searchTerm, showGroupChats])
+
+  // Optimized message retrieval with caching
+  const getConversationMessages = useCallback(
+    (phoneNumber: string) => {
+      const conversationMessages = messages.filter((m) => {
+        const messageFrom = m.from.split("@")[0]
+        const messageTo = m.to ? m.to.split("@")[0] : ""
+        return messageFrom === phoneNumber || messageTo === phoneNumber
+      })
+
+      // Remove duplicates and sort
+      const uniqueMessages = conversationMessages.reduce((acc, message) => {
+        const isDuplicate = acc.some((m) => m.id === message.id)
+        if (!isDuplicate) {
+          acc.push(message)
+        }
+        return acc
+      }, [] as WhatsAppMessage[])
+
+      return uniqueMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    },
+    [messages],
+  )
+
+  // Auto-scroll optimization
   useEffect(() => {
     if (messages.length && justOpenedChat) {
-      // Jump instantly to bottom for initial load
       if (chatContainerRef.current) {
-        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
       }
-      setJustOpenedChat(false);
+      setJustOpenedChat(false)
     } else if (!justOpenedChat) {
-      // Smooth scroll for new messages
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
     }
-  }, [messages, selectedConversation, justOpenedChat]);
+  }, [messages, selectedConversation, justOpenedChat])
 
-  // Set justOpenedChat to true when conversation changes
   useEffect(() => {
-    setJustOpenedChat(true);
-  }, [selectedConversation]);
+    setJustOpenedChat(true)
+  }, [selectedConversation])
 
-  // Listen for typing indicators
+  // Socket event listeners
   useEffect(() => {
     if (socket) {
-      const handleTypingIndicator = (data: { chatId: string, isTyping: boolean }) => {
+      const handleTypingIndicator = (data: { chatId: string; isTyping: boolean }) => {
         if (selectedConversation && data.chatId === selectedConversation.phoneNumber) {
-          setIsTyping(data.isTyping);
+          setIsTyping(data.isTyping)
         }
-      };
+      }
 
       const handleContactInfo = (data: any) => {
-        setContactInfo(data);
-      };
+        setContactInfo(data)
+      }
 
-      socket.on('typing-indicator', handleTypingIndicator);
-      socket.on('contact-info', handleContactInfo);
+      socket.on("typing-indicator", handleTypingIndicator)
+      socket.on("contact-info", handleContactInfo)
 
       return () => {
-        socket.off('typing-indicator', handleTypingIndicator);
-        socket.off('contact-info', handleContactInfo);
-      };
+        socket.off("typing-indicator", handleTypingIndicator)
+        socket.off("contact-info", handleContactInfo)
+      }
     }
-  }, [socket, selectedConversation]);
+  }, [socket, selectedConversation])
 
-  // Auto-connect to WhatsApp when component mounts
+  // Auto-connect
   useEffect(() => {
-    if (status === 'disconnected') {
-      connect();
+    if (status === "disconnected") {
+      connect()
     }
-  }, [status, connect]);
+  }, [status, connect])
 
-  const handleSendMessage = (to: string) => {
-    if (messageInput.trim()) {
-      sendMessage(to, messageInput);
-      setMessageInput('');
-    }
-  };
+  const handleSendMessage = useCallback(
+    (to: string) => {
+      if (messageInput.trim()) {
+        sendMessage(to, messageInput)
+        setMessageInput("")
+      }
+    },
+    [messageInput, sendMessage],
+  )
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-  const file = event.target.files?.[0];
-  if (!file || !selectedConversation) return;
+    const file = event.target.files?.[0]
+    if (!file || !selectedConversation) return
 
-  try {
-    setIsUploading(true);
-    
-    if (file.type.startsWith('video/')) {
-      const success = await sendVideo(selectedConversation.phoneNumber, file);
-      if (!success) {
-        alert('Failed to send video');
-      }
-    } else {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const dataUrl = e.target?.result as string;
-        if (socket?.connected) {
-          socket.emit('send-media', {
-            chatId: selectedConversation.phoneNumber,
-            dataUrl,
-            filename: file.name,
-            mimetype: file.type || 'application/octet-stream',
-            caption: messageInput || ''
-          });
-          setMessageInput('');
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  } catch (error) {
-    console.error('Error uploading file:', error);
-    alert('Error uploading file');
-  } finally {
-    setIsUploading(false);
-    event.target.value = '';
-  }
-};
-
-  const startRecording = async () => {
-  try {
-    // Stop any existing recording
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
-      mediaRecorder.stream.getTracks().forEach(track => track.stop());
-    }
-
-    // Get microphone access
-    const stream = await navigator.mediaDevices.getUserMedia({ 
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        sampleRate: 16000,
-        channelCount: 1
-      }
-    });
-
-    // Find supported MIME type
-    const mimeType = [
-      'audio/webm;codecs=opus',
-      'audio/ogg;codecs=opus', 
-      'audio/webm',
-      'audio/ogg'
-    ].find(type => MediaRecorder.isTypeSupported(type));
-
-    if (!mimeType) {
-      throw new Error('No supported audio format available');
-    }
-
-    const recorder = new MediaRecorder(stream, { 
-      mimeType,
-      audioBitsPerSecond: 64000
-    });
-
-    const audioChunks: BlobPart[] = [];
-    
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        audioChunks.push(event.data);
-      }
-    };
-    
-    recorder.onstop = async () => {
-      try {
-        const audioBlob = new Blob(audioChunks, { type: mimeType });
-        
-        // Ensure blob isn't empty
-        if (audioBlob.size === 0) {
-          throw new Error('Empty audio recording');
-        }
-
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        await sendVoiceNote(selectedConversation.phoneNumber, new Uint8Array(arrayBuffer));
-      } catch (error) {
-        console.error('Error processing recording:', error);
-        alert(`Failed to send voice note: ${error.message}`);
-      } finally {
-        stream.getTracks().forEach(track => track.stop());
-      }
-    };
-
-    recorder.start(1000);
-    setMediaRecorder(recorder);
-    setIsRecording(true);
-    setVoiceNoteStatus('recording');
-  } catch (error) {
-    console.error('Recording error:', error);
-    alert(`Microphone error: ${error.message}`);
-    setVoiceNoteStatus('error');
-    setTimeout(() => setVoiceNoteStatus('idle'), 2000);
-  }
-};
-
-const stopRecording = () => {
-  if (mediaRecorder && isRecording) {
     try {
-      // Stop the recorder first
-      mediaRecorder.stop();
-      
-      // Then stop all tracks
-      if (mediaRecorder.stream) {
-        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      // Determine media type
+      let mediaType: "image" | "video" | "audio" | "file" = "file"
+      if (file.type.startsWith("image/")) {
+        mediaType = "image"
+      } else if (file.type.startsWith("video/")) {
+        mediaType = "video"
+      } else if (file.type.startsWith("audio/")) {
+        mediaType = "audio"
       }
-      
-      setIsRecording(false);
-      setMediaRecorder(null);
-      setVoiceNoteStatus('sending');
+
+      // Create preview URL
+      const previewUrl = URL.createObjectURL(file)
+
+      // Set staging data
+      setStagingMedia({
+        file,
+        preview: previewUrl,
+        type: mediaType,
+        caption: "",
+      })
+      setShowStagingModal(true)
     } catch (error) {
-      console.error('Error stopping recording:', error);
-      setVoiceNoteStatus('error');
-      setTimeout(() => setVoiceNoteStatus('idle'), 2000);
+      console.error("Error preparing file:", error)
+      alert(`Error preparing file: ${error.message}`)
+    } finally {
+      event.target.value = ""
     }
   }
-};
+
+  const handleSendStagedMedia = async () => {
+    if (!stagingMedia?.file || !selectedConversation) return
+
+    setIsUploading(true)
+    try {
+      const reader = new FileReader()
+      await new Promise<void>((resolve, reject) => {
+        reader.onload = async (e) => {
+          try {
+            const dataUrl = e.target?.result as string
+            const success = await new Promise<boolean>((resolve) => {
+              if (socket?.connected) {
+                socket.emit(
+                  "send-media",
+                  {
+                    chatId: selectedConversation.phoneNumber,
+                    dataUrl,
+                    filename: stagingMedia.file!.name,
+                    mimetype: stagingMedia.file!.type || "application/octet-stream",
+                    caption: stagingMedia.caption || "",
+                  },
+                  (response: { success: boolean }) => {
+                    resolve(response.success)
+                  },
+                )
+              } else {
+                resolve(false)
+              }
+            })
+
+            if (success) {
+              // Close staging modal
+              setShowStagingModal(false)
+              setStagingMedia(null)
+              if (stagingMedia.preview) {
+                URL.revokeObjectURL(stagingMedia.preview)
+              }
+            } else {
+              throw new Error("Failed to send media")
+            }
+            resolve()
+          } catch (error) {
+            reject(error)
+          }
+        }
+        reader.onerror = () => reject(new Error("File reading failed"))
+        reader.readAsDataURL(stagingMedia.file!)
+      })
+    } catch (error) {
+      console.error("Error uploading file:", error)
+      alert(`Error uploading file: ${error.message}`)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  const handleCloseStagingModal = () => {
+    if (stagingMedia?.preview) {
+      URL.revokeObjectURL(stagingMedia.preview)
+    }
+    setStagingMedia(null)
+    setShowStagingModal(false)
+  }
+
+  const startRecording = useCallback(async () => {
+    try {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop()
+        mediaRecorder.stream.getTracks().forEach((track) => track.stop())
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 16000,
+          channelCount: 1,
+        },
+      })
+
+      const mimeType = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm", "audio/ogg"].find((type) =>
+        MediaRecorder.isTypeSupported(type),
+      )
+
+      if (!mimeType) {
+        throw new Error("No supported audio format available")
+      }
+
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        audioBitsPerSecond: 64000,
+      })
+
+      const audioChunks: BlobPart[] = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunks.push(event.data)
+        }
+      }
+
+      recorder.onstop = async () => {
+        try {
+          const audioBlob = new Blob(audioChunks, { type: mimeType })
+
+          if (audioBlob.size === 0) {
+            throw new Error("Empty audio recording")
+          }
+
+          const arrayBuffer = await audioBlob.arrayBuffer()
+          await sendVoiceNote(selectedConversation.phoneNumber, new Uint8Array(arrayBuffer))
+        } catch (error) {
+          console.error("Error processing recording:", error)
+          alert(`Failed to send voice note: ${error.message}`)
+        } finally {
+          stream.getTracks().forEach((track) => track.stop())
+        }
+      }
+
+      recorder.start(1000)
+      setMediaRecorder(recorder)
+      setIsRecording(true)
+      setVoiceNoteStatus("recording")
+    } catch (error) {
+      console.error("Recording error:", error)
+      alert(`Microphone error: ${error.message}`)
+      setVoiceNoteStatus("error")
+      setTimeout(() => setVoiceNoteStatus("idle"), 2000)
+    }
+  }, [mediaRecorder, selectedConversation, sendVoiceNote, setVoiceNoteStatus])
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorder && isRecording) {
+      try {
+        mediaRecorder.stop()
+
+        if (mediaRecorder.stream) {
+          mediaRecorder.stream.getTracks().forEach((track) => track.stop())
+        }
+
+        setIsRecording(false)
+        setMediaRecorder(null)
+        setVoiceNoteStatus("sending")
+      } catch (error) {
+        console.error("Error stopping recording:", error)
+        setVoiceNoteStatus("error")
+        setTimeout(() => setVoiceNoteStatus("idle"), 2000)
+      }
+    }
+  }, [mediaRecorder, isRecording, setVoiceNoteStatus])
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'connected': return 'bg-green-500';
-      case 'connecting': return 'bg-yellow-500';
-      case 'error': return 'bg-red-500';
-      default: return 'bg-gray-500';
+      case "connected":
+        return "bg-green-500"
+      case "connecting":
+        return "bg-yellow-500"
+      case "error":
+        return "bg-red-500"
+      default:
+        return "bg-gray-500"
     }
-  };
+  }
 
   const getStatusText = (status: string) => {
     switch (status) {
-      case 'connected': return 'Connected';
-      case 'connecting': return 'Connecting...';
-      case 'error': return 'Error';
-      default: return 'Disconnected';
+      case "connected":
+        return "Connected"
+      case "connecting":
+        return "Connecting..."
+      case "error":
+        return "Error"
+      default:
+        return "Disconnected"
     }
-  };
+  }
 
-  // Filter conversations based on search
-  const filteredConversations = whatsappConversations.filter(conversation =>
-    conversation.phoneNumber.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const renderReadReceipts = (message: WhatsAppMessage) => {
+    if (!message.fromMe) return null
 
-  // Get messages for selected conversation with duplicate removal
-  const getConversationMessages = (phoneNumber: string) => {
-    const conversationMessages = messages.filter(m => {
-      const messageFrom = m.from.split('@')[0];
-      const messageTo = m.to ? m.to.split('@')[0] : '';
-      return messageFrom === phoneNumber || messageTo === phoneNumber;
-    });
+    return (
+      <div className="flex items-center gap-1 ml-2">
+        {message.ack >= 1 && <Check className="h-3 w-3" />}
+        {message.ack >= 2 && <Check className="h-3 w-3 -ml-1" />}
+        {message.ack >= 3 && <CheckCheck className="h-3 w-3 text-blue-500" />}
+      </div>
+    )
+  }
 
-    // Remove duplicates based on content and timestamp
-    const uniqueMessages = conversationMessages.reduce((acc, message) => {
-      const isDuplicate = acc.some(m =>
-        m.id === message.id ||
-        (m.body === message.body &&
-          m.from === message.from &&
-          Math.abs(new Date(m.timestamp).getTime() - new Date(message.timestamp).getTime()) < 1000)
-      );
-
-      if (!isDuplicate) {
-        acc.push(message);
-      }
-      return acc;
-    }, [] as WhatsAppMessage[]);
-
-    return uniqueMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  };
+  const getDisplayName = (conversation: any) => {
+    if (conversation.businessName) {
+      return conversation.businessName
+    }
+    if (conversation.contactName && conversation.contactName !== conversation.phoneNumber) {
+      return conversation.contactName
+    }
+    return conversation.phoneNumber
+  }
 
   return (
     <div className="h-screen bg-gray-100 flex flex-col">
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-3">
-          <Link to="/">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="h-4 w-4" />
-            </Button>
-          </Link>
-        </div>
-        <div className="flex-1">
-          <h1 className="text-lg font-semibold">WhatsApp Chat</h1>
+          <h1 className="text-lg font-semibold">WhatsApp Business</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Badge className={`${getStatusColor(status)} text-white text-xs`}>
-            {getStatusText(status)}
-          </Badge>
+          <Badge className={`${getStatusColor(status)} text-white text-xs`}>{getStatusText(status)}</Badge>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowGroupChats(!showGroupChats)}
+            className={showGroupChats ? "bg-green-50" : ""}
+          >
+            <Users className="h-4 w-4 mr-1" />
+            Groups
+          </Button>
           <Dialog open={showQrDialog} onOpenChange={setShowQrDialog}>
             <DialogTrigger asChild>
-              <Button variant="outline" size="sm">QR</Button>
+              <Button variant="outline" size="sm">
+                QR
+              </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
@@ -316,11 +436,11 @@ const stopRecording = () => {
               </DialogHeader>
               {qrCode ? (
                 <div className="flex justify-center">
-                  <img src={qrCode} alt="WhatsApp QR Code" className="max-w-xs" />
+                  <img src={qrCode || "/placeholder.svg"} alt="WhatsApp QR Code" className="max-w-xs" />
                 </div>
               ) : (
                 <p className="text-center text-gray-500">
-                  {status === 'connected' ? 'WhatsApp is already connected!' : 'Waiting for QR code...'}
+                  {status === "connected" ? "WhatsApp is already connected!" : "Waiting for QR code..."}
                 </p>
               )}
             </DialogContent>
@@ -337,7 +457,7 @@ const stopRecording = () => {
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="Search or start new chat"
+                placeholder="Search conversations..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10 bg-gray-50 border-0 focus:bg-white"
@@ -345,8 +465,8 @@ const stopRecording = () => {
             </div>
           </div>
 
-          {/* Conversations List - Scrollable */}
-          <div className="flex-1 overflow-y-auto">
+          {/* Conversations List - Virtualized for performance */}
+          <div className="flex-1 overflow-y-auto" ref={virtualizedRef}>
             {filteredConversations.length === 0 ? (
               <div className="p-8 text-center text-gray-500">
                 <div className="text-4xl mb-4">💬</div>
@@ -355,64 +475,96 @@ const stopRecording = () => {
               </div>
             ) : (
               filteredConversations.map((conversation) => {
+                const displayName = getDisplayName(conversation)
+
                 return (
                   <div
                     key={conversation.id}
-                    className={`p-3 border-b border-gray-100 cursor-pointer hover:bg-gray-50 ${selectedConversation?.id === conversation.id ? 'bg-blue-50' : ''
-                      }`}
+                    className={`p-3 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
+                      selectedConversation?.id === conversation.id ? "bg-blue-50" : ""
+                    }`}
                     onClick={() => {
-                      setSelectedConversation(conversation);
-                      // Load conversation messages
-                      getConversation(conversation.phoneNumber);
-                      // Mark as read when selected
+                      setSelectedConversation(conversation)
+                      getConversation(conversation.phoneNumber)
                       if (conversation.unreadCount > 0) {
-                        markAsRead(conversation.phoneNumber);
+                        markAsRead(conversation.phoneNumber)
                       }
                     }}
                   >
                     <div className="flex items-center gap-3">
-                      {/* Avatar */}
-                      {conversation.profilePicUrl ? (
-                        <img
-                          src={conversation.profilePicUrl}
-                          alt={conversation.contactName || conversation.phoneNumber}
-                          className="w-12 h-12 rounded-full object-cover"
-                          onError={(e) => {
-                            // Fallback to default avatar if image fails to load
-                            e.currentTarget.style.display = 'none';
-                            e.currentTarget.nextElementSibling?.classList.remove('hidden');
-                          }}
-                        />
-                      ) : null}
-                      <div className={`w-12 h-12 bg-green-500 rounded-full flex items-center justify-center text-white font-semibold ${conversation.profilePicUrl ? 'hidden' : ''}`}>
-                        {conversation.phoneNumber.charAt(0).toUpperCase()}
+                      {/* Avatar with business indicator */}
+                      <div className="relative">
+                        {conversation.profilePicUrl ? (
+                          <img
+                            src={conversation.profilePicUrl || "/placeholder.svg"}
+                            alt={displayName}
+                            className="w-12 h-12 rounded-full object-cover"
+                            onError={(e) => {
+                              e.currentTarget.style.display = "none"
+                              e.currentTarget.nextElementSibling?.classList.remove("hidden")
+                            }}
+                          />
+                        ) : null}
+                        <div
+                          className={`w-12 h-12 bg-green-500 rounded-full flex items-center justify-center text-white font-semibold ${
+                            conversation.profilePicUrl ? "hidden" : ""
+                          }`}
+                        >
+                          {conversation.isGroup ? <Users className="h-6 w-6" /> : displayName.charAt(0).toUpperCase()}
+                        </div>
+
+                        {/* Business indicator */}
+                        {conversation.isBusiness && (
+                          <div className="absolute -bottom-1 -right-1 bg-green-600 rounded-full p-1">
+                            <Building2 className="h-3 w-3 text-white" />
+                          </div>
+                        )}
+
+                        {/* Group indicator */}
+                        {conversation.isGroup && (
+                          <div className="absolute -bottom-1 -right-1 bg-blue-600 rounded-full p-1">
+                            <Users className="h-3 w-3 text-white" />
+                          </div>
+                        )}
                       </div>
 
                       {/* Conversation Info */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
-                          <h3 className="font-medium text-gray-900 truncate">
-                            {conversation.contactName || conversation.phoneNumber}
-                          </h3>
-                          {conversation.unreadCount > 0 && (
-                            <Badge variant="destructive" className="text-xs">
-                              {conversation.unreadCount}
-                            </Badge>
-                          )}
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-medium text-gray-900 truncate">{displayName}</h3>
+                            {conversation.isBusiness && (
+                              <Badge variant="secondary" className="text-xs bg-green-100 text-green-800">
+                                Business
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {conversation.unreadCount > 0 && (
+                              <Badge variant="destructive" className="text-xs">
+                                {conversation.unreadCount}
+                              </Badge>
+                            )}
+                          </div>
                         </div>
-                        <p className="text-sm text-gray-600 truncate">
-                          {conversation.lastMessage}
-                        </p>
-                        <p className="text-xs text-gray-400 mt-1">
-                          {new Date(conversation.lastMessageTime).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
-                        </p>
+                        <p className="text-sm text-gray-600 truncate">{conversation.lastMessage}</p>
+                        <div className="flex items-center justify-between mt-1">
+                          <p className="text-xs text-gray-400">
+                            {new Date(conversation.lastMessageTime).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </p>
+                          {conversation.lastMessageFromMe &&
+                            renderReadReceipts({
+                              fromMe: true,
+                              ack: conversation.lastMessageAck || 0,
+                            } as WhatsAppMessage)}
+                        </div>
                       </div>
                     </div>
                   </div>
-                );
+                )
               })
             )}
           </div>
@@ -428,33 +580,49 @@ const stopRecording = () => {
                   className="flex items-center gap-3 cursor-pointer hover:bg-gray-50 p-2 rounded-lg transition-colors"
                   onClick={() => {
                     if (selectedConversation) {
-                      // Get enhanced contact info from backend
-                      getContactInfo(selectedConversation.phoneNumber);
-                      setShowContactInfo(true);
+                      getContactInfo(selectedConversation.phoneNumber)
+                      setShowContactInfo(true)
                     }
                   }}
                 >
-                  {selectedConversation.profilePicUrl ? (
-                    <img
-                      src={selectedConversation.profilePicUrl}
-                      alt={selectedConversation.contactName || selectedConversation.phoneNumber}
-                      className="w-10 h-10 rounded-full object-cover"
-                      onError={(e) => {
-                        // Fallback to default avatar if image fails to load
-                        e.currentTarget.style.display = 'none';
-                        e.currentTarget.nextElementSibling?.classList.remove('hidden');
-                      }}
-                    />
-                  ) : null}
-                  <div className={`w-10 h-10 bg-green-500 rounded-full flex items-center justify-center text-white font-semibold ${selectedConversation.profilePicUrl ? 'hidden' : ''}`}>
-                    {selectedConversation.phoneNumber.charAt(0).toUpperCase()}
+                  <div className="relative">
+                    {selectedConversation.profilePicUrl ? (
+                      <img
+                        src={selectedConversation.profilePicUrl || "/placeholder.svg"}
+                        alt={getDisplayName(selectedConversation)}
+                        className="w-10 h-10 rounded-full object-cover"
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none"
+                          e.currentTarget.nextElementSibling?.classList.remove("hidden")
+                        }}
+                      />
+                    ) : null}
+                    <div
+                      className={`w-10 h-10 bg-green-500 rounded-full flex items-center justify-center text-white font-semibold ${
+                        selectedConversation.profilePicUrl ? "hidden" : ""
+                      }`}
+                    >
+                      {selectedConversation.isGroup ? (
+                        <Users className="h-5 w-5" />
+                      ) : (
+                        getDisplayName(selectedConversation).charAt(0).toUpperCase()
+                      )}
+                    </div>
+
+                    {selectedConversation.isBusiness && (
+                      <div className="absolute -bottom-1 -right-1 bg-green-600 rounded-full p-1">
+                        <Building2 className="h-3 w-3 text-white" />
+                      </div>
+                    )}
                   </div>
                   <div>
-                    <h2 className="font-semibold text-gray-900">
-                      {selectedConversation.contactName || selectedConversation.phoneNumber}
-                    </h2>
+                    <h2 className="font-semibold text-gray-900">{getDisplayName(selectedConversation)}</h2>
                     <p className="text-sm text-gray-500">
-                      {isTyping ? 'typing...' : 'online'}
+                      {isTyping
+                        ? "typing..."
+                        : selectedConversation.isGroup
+                          ? `${selectedConversation.participantCount || 0} participants`
+                          : "online"}
                     </p>
                   </div>
                 </div>
@@ -471,11 +639,11 @@ const stopRecording = () => {
                 </div>
               </div>
 
-              {/* Messages Area - Scrollable */}
+              {/* Messages Area - Optimized scrolling */}
               <div ref={chatContainerRef} className="flex-1 bg-gray-50 p-4 overflow-y-auto">
                 <div className="space-y-3">
                   {(() => {
-                    const conversationMessages = getConversationMessages(selectedConversation.phoneNumber);
+                    const conversationMessages = getConversationMessages(selectedConversation.phoneNumber)
 
                     return conversationMessages.length === 0 ? (
                       <div className="text-center text-gray-500 py-8">
@@ -486,212 +654,175 @@ const stopRecording = () => {
                     ) : (
                       <>
                         {conversationMessages.map((message, index) => {
-                          // Determine if message is sent by current user
-                          // In WhatsApp, messages from the current user have fromMe=true
-                          // Messages from others have fromMe=false or undefined
-                          const isSentByMe = message.fromMe === true || message.type === 'sent';
-
-                          // Debug logging (only for media messages)
-                          if (message.mediaData) {
-                            console.log(`Media message ${index}:`, {
-                              type: message.type,
-                              filename: message.filename,
-                              hasMediaData: !!message.mediaData
-                            });
-                          }
+                          const isSentByMe = message.fromMe === true || message.type === "sent"
 
                           return (
                             <div
-                              key={index}
-                              className={`flex ${isSentByMe ? 'justify-end' : 'justify-start'}`}
+                              key={`${message.id}-${index}`}
+                              className={`flex ${isSentByMe ? "justify-end" : "justify-start"}`}
                             >
                               <div
-                                className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${isSentByMe
-                                    ? 'bg-green-500 text-white'
-                                    : 'bg-white text-gray-800 shadow-sm'
-                                  }`}
+                                className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
+                                  isSentByMe ? "bg-green-500 text-white" : "bg-white text-gray-800 shadow-sm"
+                                }`}
                               >
-                                {/* Show caption/body text if it exists and is not just a placeholder */}
-                                {message.body && message.body !== '[Media Message]' && message.body !== '[Image]' && message.body !== '[Video]' && message.body !== '[Audio]' && message.body !== '[Voice Message]' && !message.body.startsWith('[File:') && (
-                                  <p className="text-sm mb-2">{message.body}</p>
+                                {/* Group message sender name */}
+                                {selectedConversation.isGroup && !isSentByMe && (
+                                  <p className="text-xs font-medium text-green-600 mb-1">
+                                    {message.contact?.name || message.from.split("@")[0]}
+                                  </p>
                                 )}
+
+                                {/* Message content */}
+                                {message.body &&
+                                  message.body !== "[Media Message]" &&
+                                  message.body !== "[Image]" &&
+                                  message.body !== "[Video]" &&
+                                  message.body !== "[Audio]" &&
+                                  message.body !== "[Voice Message]" &&
+                                  !message.body.startsWith("[File:") && <p className="text-sm mb-2">{message.body}</p>}
 
                                 {/* Media Display */}
                                 {message.mediaData && (
                                   <div className="mt-2">
-                                    {message.type === 'image' && (
+                                    {message.type === "image" && (
                                       <img
-                                        src={message.mediaData}
-                                        alt={message.filename || 'Image'}
-                                        className="max-w-xs rounded-lg shadow-sm"
+                                        src={message.mediaData || "/placeholder.svg"}
+                                        alt={message.filename || "Image"}
+                                        className="max-w-xs rounded-lg shadow-sm cursor-pointer"
+                                        onClick={() => window.open(message.mediaData, "_blank")}
                                       />
                                     )}
 
-                                    {message.type === 'video' && (
+                                    {message.type === "video" && (
                                       <div className="relative">
                                         <video
                                           src={message.mediaData}
                                           controls
                                           className="max-w-xs rounded-lg shadow-sm"
                                           preload="metadata"
-                                          onError={(e) => console.error('Video load error:', e)}
-                                          onLoadStart={() => console.log('Video loading started:', message.filename)}
-                                          onLoadedData={() => console.log('Video loaded successfully:', message.filename)}
                                         />
                                         {message.filename && (
-                                          <div className="text-xs text-gray-500 mt-1">
-                                            {message.filename}
-                                          </div>
+                                          <div className="text-xs text-gray-500 mt-1">{message.filename}</div>
                                         )}
                                       </div>
                                     )}
 
-                                    {message.type === 'voice' && (
-                                      <VoiceNotePlayer
-                                        src={message.mediaData}
-                                        className="w-full"
-                                      />
+                                    {(message.type === "voice" || message.type === "audio") && (
+                                      <VoiceNotePlayer src={message.mediaData} className="w-full" />
                                     )}
 
-                                    {message.type === 'audio' && (
-                                      <VoiceNotePlayer
-                                        src={message.mediaData}
-                                        className="w-full"
-                                      />
-                                    )}
-
-                                    {message.type === 'file' && (
+                                    {message.type === "file" && (
                                       <a
                                         href={message.mediaData}
-                                        download={message.filename || 'file'}
+                                        download={message.filename || "file"}
                                         className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
                                       >
                                         <span className="text-2xl">📄</span>
                                         <div className="flex-1 min-w-0">
                                           <div className="font-medium text-sm truncate">
-                                            {message.filename || 'File'}
+                                            {message.filename || "File"}
                                           </div>
-                                          <div className="text-xs text-gray-500">
-                                            Click to download
-                                          </div>
+                                          <div className="text-xs text-gray-500">Click to download</div>
                                         </div>
                                       </a>
                                     )}
                                   </div>
                                 )}
-                                <div className={`flex items-center justify-between mt-1 ${isSentByMe ? 'text-green-100' : 'text-gray-500'
-                                  }`}>
+
+                                {/* Message footer with timestamp and read receipts */}
+                                <div
+                                  className={`flex items-center justify-between mt-1 ${
+                                    isSentByMe ? "text-green-100" : "text-gray-500"
+                                  }`}
+                                >
                                   <p className="text-xs">
                                     {new Date(message.timestamp).toLocaleTimeString([], {
-                                      hour: '2-digit',
-                                      minute: '2-digit'
+                                      hour: "2-digit",
+                                      minute: "2-digit",
                                     })}
                                   </p>
                                   <div className="flex items-center gap-1">
-                                    {isSentByMe && message.ack !== undefined && (
-                                      <>
-                                        {message.ack >= 2 && <span className="text-xs">✓</span>}
-                                        {message.ack >= 3 && <span className="text-xs">✓</span>}
-                                        {message.ack >= 4 && <span className="text-xs text-blue-300">✓</span>}
-                                      </>
-                                    )}
-                                    {/* Forward button for received messages */}
-                                    {(
-                                      <button
-                                        onClick={() => {
-                                          console.log('Forwarding message:', message.id);
-                                          setForwardingMessage(message);
-                                          setShowForwardModal(true);
-                                        }}
-                                        className="text-xs opacity-60 hover:opacity-100 transition-opacity"
-                                        title="Forward message"
-                                      >
-                                                        <ForwardIcon className="h-4 w-4" />
-
-                                      </button>
-                                    )}
+                                    {renderReadReceipts(message)}
+                                    <button
+                                      onClick={() => {
+                                        setForwardingMessage(message)
+                                        setShowForwardModal(true)
+                                      }}
+                                      className="text-xs opacity-60 hover:opacity-100 transition-opacity ml-2"
+                                      title="Forward message"
+                                    >
+                                      <ForwardIcon className="h-3 w-3" />
+                                    </button>
                                   </div>
                                 </div>
                               </div>
                             </div>
-                          );
+                          )
                         })}
-                        {/* Scroll target for auto-scroll */}
                         <div ref={messagesEndRef} />
                       </>
-                    );
+                    )
                   })()}
                 </div>
               </div>
 
-              {/* Message Input - Fixed at bottom */}
+              {/* Message Input */}
               <div className="bg-white border-t border-gray-200 p-4 flex-shrink-0">
                 <div className="flex items-center gap-3">
-                  {/* File Upload Button */}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="cursor-pointer"
-                    disabled={isUploading}
-                    onClick={() => {
-                      console.log('📎 File upload button clicked');
-                      // Create a temporary file input
-                      const input = document.createElement('input');
-                      input.type = 'file';
-                      input.accept = '*/*';
-                      input.onchange = (e) => {
-                        const target = e.target as HTMLInputElement;
-                        if (target.files && target.files[0]) {
-                          handleFileUpload(e as any);
-                        }
-                      };
-                      input.click();
-                    }}
-                  >
-                    {isUploading ? (
-                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
-                    ) : (
-                      <Paperclip className="h-4 w-4" />
-                    )}
-                  </Button>
+                  <MediaUploader onUpload={handleFileUpload} isUploading={isUploading} />
 
                   <Input
                     value={messageInput}
                     onChange={(e) => {
-                      setMessageInput(e.target.value);
+                      setMessageInput(e.target.value)
 
-                      // Send typing indicator
                       if (selectedConversation && e.target.value.length > 0) {
                         if (socket?.connected) {
-                          socket.emit('typing', { chatId: selectedConversation.phoneNumber });
+                          socket.emit("typing", { chatId: selectedConversation.phoneNumber })
                         }
 
-                        // Clear existing timeout
                         if (typingTimeout) {
-                          clearTimeout(typingTimeout);
+                          clearTimeout(typingTimeout)
                         }
 
-                        // Set new timeout to stop typing indicator
                         const timeout = setTimeout(() => {
                           if (socket?.connected) {
-                            socket.emit('stop-typing', { chatId: selectedConversation.phoneNumber });
+                            socket.emit("stop-typing", { chatId: selectedConversation.phoneNumber })
                           }
-                        }, 1000);
+                        }, 1000)
 
-                        setTypingTimeout(timeout);
+                        setTypingTimeout(timeout)
                       }
                     }}
                     placeholder="Type a message"
                     className="flex-1"
                     onKeyPress={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendMessage(selectedConversation.phoneNumber);
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault()
+                        handleSendMessage(selectedConversation.phoneNumber)
+                      }
+                    }}
+                    onPaste={(e) => {
+                      // Handle paste events for images
+                      const items = e.clipboardData?.items
+                      if (items) {
+                        for (let i = 0; i < items.length; i++) {
+                          const item = items[i]
+                          if (item.type.indexOf("image") !== -1) {
+                            const file = item.getAsFile()
+                            if (file) {
+                              const fakeEvent = {
+                                target: { files: [file], value: "" },
+                              } as any
+                              handleFileUpload(fakeEvent)
+                            }
+                          }
+                        }
                       }
                     }}
                   />
 
-                  {/* Voice Recording Button */}
                   {!messageInput.trim() && (
                     <Button
                       onClick={isRecording ? stopRecording : startRecording}
@@ -713,17 +844,15 @@ const stopRecording = () => {
               </div>
             </>
           ) : (
-            /* Welcome Screen */
             <div className="flex-1 flex items-center justify-center bg-gray-50">
               <div className="text-center">
                 <div className="text-6xl mb-4">💬</div>
-                <h2 className="text-2xl font-semibold text-gray-900 mb-2">Welcome to WhatsApp</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 mb-2">Welcome to WhatsApp Business</h2>
                 <p className="text-gray-600 mb-4">Select a conversation to start messaging</p>
                 <p className="text-sm text-gray-500">
                   {whatsappConversations.length === 0
                     ? "No conversations yet. Send a message to start chatting!"
-                    : `${whatsappConversations.length} conversation${whatsappConversations.length !== 1 ? 's' : ''} available`
-                  }
+                    : `${whatsappConversations.length} conversation${whatsappConversations.length !== 1 ? "s" : ""} available`}
                 </p>
               </div>
             </div>
@@ -739,32 +868,33 @@ const stopRecording = () => {
           </DialogHeader>
           {contactInfo && (
             <div className="space-y-4">
-              {/* Profile Picture */}
               <div className="flex justify-center">
                 {contactInfo.profilePicUrl ? (
                   <img
-                    src={contactInfo.profilePicUrl}
+                    src={contactInfo.profilePicUrl || "/placeholder.svg"}
                     alt={contactInfo.name}
                     className="w-24 h-24 rounded-full object-cover"
                   />
                 ) : (
                   <div className="w-24 h-24 bg-green-500 rounded-full flex items-center justify-center text-white text-2xl font-semibold">
-                    {contactInfo.name?.charAt(0).toUpperCase() || '?'}
+                    {contactInfo.name?.charAt(0).toUpperCase() || "?"}
                   </div>
                 )}
               </div>
 
-              {/* Contact Details */}
               <div className="space-y-3">
                 <div>
-                  <h3 className="font-semibold text-lg">{contactInfo.name}</h3>
+                  <h3 className="font-semibold text-lg">{contactInfo.businessName || contactInfo.name}</h3>
                   <p className="text-sm text-gray-500">{contactInfo.phoneNumber}</p>
-                  {contactInfo.isBusiness && contactInfo.business?.category && (
+                  {contactInfo.isBusiness && (
                     <div className="flex items-center gap-2 mt-1">
                       <Badge variant="secondary" className="text-xs bg-green-100 text-green-800">
+                        <Building2 className="h-3 w-3 mr-1" />
                         Business Account
                       </Badge>
-                      <span className="text-xs text-gray-500">{contactInfo.business.category}</span>
+                      {contactInfo.business?.category && (
+                        <span className="text-xs text-gray-500">{contactInfo.business.category}</span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -791,13 +921,6 @@ const stopRecording = () => {
                       <div>
                         <h5 className="text-xs font-medium text-gray-600">Address</h5>
                         <p className="text-sm text-gray-600">{contactInfo.business.address}</p>
-                      </div>
-                    )}
-
-                    {contactInfo.business.hours && (
-                      <div>
-                        <h5 className="text-xs font-medium text-gray-600">Business Hours</h5>
-                        <p className="text-sm text-gray-600">{contactInfo.business.hours}</p>
                       </div>
                     )}
 
@@ -834,125 +957,116 @@ const stopRecording = () => {
         </DialogContent>
       </Dialog>
 
-      {showForwardModal && forwardingMessage && (
-        <Dialog open={showForwardModal} onOpenChange={setShowForwardModal}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Forward Message</DialogTitle>
-              <DialogDescription>
-                Select a contact to forward this message to:
-              </DialogDescription>
-            </DialogHeader>
+      {/* Message Forwarder */}
+      <MessageForwarder
+        isOpen={showForwardModal}
+        onClose={() => {
+          setShowForwardModal(false)
+          setForwardingMessage(null)
+        }}
+        message={forwardingMessage}
+        conversations={whatsappConversations}
+        onForward={forwardMessage}
+      />
+
+      {/* Media Staging Modal */}
+      <Dialog open={showStagingModal} onOpenChange={handleCloseStagingModal}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Send Media</DialogTitle>
+          </DialogHeader>
+
+          {stagingMedia && (
             <div className="space-y-4">
-              {/* Message Preview with better media handling */}
-              <div className="p-3 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-600 mb-2">Message to forward:</p>
-                {forwardingMessage.mediaData ? (
-                  <div className="mb-2">
-                    {forwardingMessage.type === 'image' && (
-                      <img
-                        src={forwardingMessage.mediaData}
-                        alt="Forwarding media"
-                        className="max-w-xs rounded-lg"
-                      />
-                    )}
-                    {forwardingMessage.type === 'video' && (
-                      <video
-                        src={forwardingMessage.mediaData}
-                        controls
-                        className="max-w-xs rounded-lg"
-                      />
-                    )}
-                    {['voice', 'audio'].includes(forwardingMessage.type) && (
-                      <VoiceNotePlayer
-                        src={forwardingMessage.mediaData}
-                        className="w-full"
-                      />
-                    )}
-                    {forwardingMessage.type === 'file' && (
-                      <div className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg">
-                        <span className="text-2xl">📄</span>
-                        <div>
-                          <div className="font-medium text-sm">
-                            {forwardingMessage.filename || 'File'}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {forwardingMessage.type}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    {forwardingMessage.body && forwardingMessage.body !== '[Media Message]' && (
-                      <p className="text-sm mt-2">{forwardingMessage.body}</p>
-                    )}
+              {/* Media Preview */}
+              <div className="flex justify-center bg-gray-50 rounded-lg p-4">
+                {stagingMedia.type === "image" && (
+                  <img
+                    src={stagingMedia.preview || "/placeholder.svg"}
+                    alt="Preview"
+                    className="max-w-full max-h-64 rounded-lg object-contain"
+                  />
+                )}
+
+                {stagingMedia.type === "video" && (
+                  <video
+                    src={stagingMedia.preview || ""}
+                    controls
+                    className="max-w-full max-h-64 rounded-lg"
+                    preload="metadata"
+                  />
+                )}
+
+                {stagingMedia.type === "audio" && (
+                  <div className="flex items-center gap-3 p-4 bg-white rounded-lg border">
+                    <div className="text-3xl">🎵</div>
+                    <div>
+                      <div className="font-medium">{stagingMedia.file?.name}</div>
+                      <div className="text-sm text-gray-500">Audio file</div>
+                    </div>
                   </div>
-                ) : (
-                  <p className="text-sm">{forwardingMessage.body}</p>
+                )}
+
+                {stagingMedia.type === "file" && (
+                  <div className="flex items-center gap-3 p-4 bg-white rounded-lg border">
+                    <div className="text-3xl">📄</div>
+                    <div>
+                      <div className="font-medium">{stagingMedia.file?.name}</div>
+                      <div className="text-sm text-gray-500">
+                        {stagingMedia.file?.size ? `${(stagingMedia.file.size / 1024 / 1024).toFixed(2)} MB` : "File"}
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
 
-              {/* Enhanced Contact Selection with Search */}
+              {/* Caption Input */}
               <div className="space-y-2">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                  <Input
-                    placeholder="Search contacts..."
-                    className="pl-10"
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                  />
-                </div>
-                <div className="max-h-60 overflow-y-auto border rounded-md">
-                  {whatsappConversations
-                    .filter(conv =>
-                      conv.phoneNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                      (conv.contactName && conv.contactName.toLowerCase().includes(searchTerm.toLowerCase()))
-                    )
-                    .map((conv) => (
-                      <div
-                        key={conv.phoneNumber}
-                        className="p-3 hover:bg-gray-50 cursor-pointer flex items-center gap-3"
-                        onClick={() => {
-                          forwardMessage(forwardingMessage.id, conv.phoneNumber);
-                          setShowForwardModal(false);
-                          setForwardingMessage(null);
-                        }}
-                      >
-                        {conv.profilePicUrl ? (
-                          <img
-                            src={conv.profilePicUrl}
-                            alt={conv.contactName}
-                            className="w-8 h-8 rounded-full"
-                          />
-                        ) : (
-                          <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white">
-                            {conv.contactName?.charAt(0) || conv.phoneNumber.charAt(0)}
-                          </div>
-                        )}
-                        <div>
-                          <p className="font-medium">{conv.contactName || conv.phoneNumber}</p>
-                          <p className="text-xs text-gray-500">{conv.phoneNumber}</p>
-                        </div>
-                      </div>
-                    ))}
+                <label className="text-sm font-medium text-gray-700">Caption (optional)</label>
+                <Input
+                  value={stagingMedia.caption}
+                  onChange={(e) => setStagingMedia((prev) => (prev ? { ...prev, caption: e.target.value } : null))}
+                  placeholder="Add a caption..."
+                  className="w-full"
+                />
+              </div>
+
+              {/* Send to info */}
+              <div className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
+                <div className="text-sm text-gray-600">
+                  Sending to: <span className="font-medium">{getDisplayName(selectedConversation)}</span>
                 </div>
               </div>
-            </div>
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setShowForwardModal(false);
-                  setForwardingMessage(null);
-                }}
-              >
-                Cancel
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
-    </div>
-  );
-};
 
-export default Chat;
+              {/* Action buttons */}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={handleCloseStagingModal} disabled={isUploading}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSendStagedMedia}
+                  disabled={isUploading}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  {isUploading ? (
+                    <>
+                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent mr-2" />
+                      Sending...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="h-4 w-4 mr-2" />
+                      Send
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+export default Chat
