@@ -12,6 +12,8 @@ import { generateId } from '@/lib/utils';
 import { ChatStorageService } from '@/lib/chatStorage';
 import { uploadImages } from '@/lib/cloudinary';
 import { sendMessage, createTextMessage } from '@/api/wassender';
+import { nanoid } from 'nanoid';
+
 
 interface Part {
   id: string;
@@ -160,28 +162,27 @@ export function MessageComposer({
     // 1. Upload to Cloudinary
     const { urls } = await uploadImages(messageData.imageFiles);
 
-    // 2. Create gallery data package
-    const galleryData = {
+    // 2. Generate unique ID
+    const galleryId = nanoid(12); // 12-character URL-safe ID
+
+    // 3. Store in localStorage with expiration (30 days)
+    localStorage.setItem(`g_${galleryId}`, JSON.stringify({
       images: urls,
       message: messageData.messageTitle,
-      timestamp: Date.now()
-    };
+      expires: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 days
+    }));
 
-    // 3. Generate URL-safe encoded link
-    const galleryLink = createGalleryLink(galleryData);
-    
-    // 4. Store in localStorage as backup
-    localStorage.setItem(`gallery_${galleryData.timestamp}`, JSON.stringify(galleryData));
+    // 4. Generate the gallery link
+    const galleryLink = `${window.location.origin}/gallery/${galleryId}`;
 
-    // 5. Update state with the single link
+    // 5. Update state
     onMessageDataChange({ 
       uploadedImageUrls: [galleryLink],
-      // Clear the files after successful upload
     });
 
     toast({
       title: "Gallery ready!",
-      description: "All images are accessible via one link",
+      description: "All images are accessible via one short link",
     });
 
   } catch (error) {

@@ -4,13 +4,10 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 
-interface GalleryImage {
-  url: string;
-}
-
 interface GalleryData {
-  images: GalleryImage[];
+  images: string[]; // Array of image URLs
   message: string;
+  expires?: number;
 }
 
 export default function Gallery() {
@@ -28,29 +25,35 @@ export default function Gallery() {
       return;
     }
 
-    try {
-      // Decode the URL-safe base64 data
-      // 1. Restore URL-safe base64
-    const base64Data = batchId
-      .replace(/-/g, '+')
-      .replace(/_/g, '/');
-    
-    // 2. Decode from base64
-    const jsonData = decodeURIComponent(escape(atob(base64Data)));
-    
-    // 3. Parse JSON
-    const galleryData = JSON.parse(jsonData);
-      
-      setData({
-      images: galleryData.images.map((url: string) => ({ url })),
-      message: galleryData.message || ''
-    });
-    } catch (err) {
-      setError('Invalid gallery link');
-      console.error('Decoding error:', err);
-    } finally {
-      setLoading(false);
-    }
+    const loadGalleryData = () => {
+      try {
+        const localStorageKey = `g_${batchId}`;
+        const storedData = localStorage.getItem(localStorageKey);
+
+        if (!storedData) {
+          throw new Error('Gallery not found');
+        }
+
+        const galleryData = JSON.parse(storedData) as GalleryData;
+
+        // Check if gallery has expired
+        if (galleryData.expires && galleryData.expires < Date.now()) {
+          localStorage.removeItem(localStorageKey);
+          throw new Error('This gallery link has expired');
+        }
+
+        setData({
+          images: galleryData.images,
+          message: galleryData.message || ''
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Invalid gallery link');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadGalleryData();
   }, [batchId]);
 
   const handleKeyPress = (e: KeyboardEvent) => {
@@ -116,14 +119,14 @@ export default function Gallery() {
       {/* Image Grid */}
       <div className="container py-8">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {data.images.map((image, index) => (
+          {data.images.map((imageUrl, index) => (
             <div
-              key={image.url}
+              key={imageUrl}
               className="aspect-square relative overflow-hidden rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
               onClick={() => setSelectedImage(index)}
             >
               <img
-                src={image.url}
+                src={imageUrl}
                 alt={`Gallery image ${index + 1}`}
                 className="object-cover w-full h-full"
                 loading="lazy"
@@ -141,7 +144,7 @@ export default function Gallery() {
             onClick={() => setSelectedImage(null)}
           >
             <img
-              src={data.images[selectedImage].url}
+              src={data.images[selectedImage]}
               alt={`Selected image ${selectedImage + 1}`}
               className="max-h-[90vh] max-w-[90vw] object-contain"
             />
