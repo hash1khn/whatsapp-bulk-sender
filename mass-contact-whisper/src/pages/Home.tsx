@@ -18,8 +18,9 @@ import { StagedContactsTable } from '@/components/StagedContactsTable';
 import { ApiKeyModal } from '@/components/ApiKeyModal';
 import { sendMessage, createTextMessage } from '@/api/wassender';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Progress } from '@/components/ui/progress';
-import { Textarea } from '@/components/ui/textarea';
+  import { Progress } from '@/components/ui/progress';
+  import { Textarea } from '@/components/ui/textarea';
+  import { Slider } from '@/components/ui/slider';
 
 // Define interfaces for message data
 interface Part {
@@ -76,6 +77,9 @@ export function Home() {
   const [editableMessage, setEditableMessage] = useState('');
   const [showEditMessageModal, setShowEditMessageModal] = useState(false);
   const [finalMessageText, setFinalMessageText] = useState('');
+  const [minDelay, setMinDelay] = useState(5);
+  const [maxDelay, setMaxDelay] = useState(8);
+  const [currentDelay, setCurrentDelay] = useState(0);
 
   // Apply filters whenever filters or contacts change
   useEffect(() => {
@@ -342,7 +346,12 @@ export function Home() {
         setSendStatuses(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'error', errorMsg: error?.message || 'Error' } : c));
       }
       if (i < contacts.length - 1) {
-        await new Promise(res => setTimeout(res, 5000)); // 5 second delay
+        // Calculate random delay between min and max
+        const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+        
+        setCurrentDelay(delay);
+        await new Promise(res => setTimeout(res, delay * 1000));
+        setCurrentDelay(0);
       }
     }
     setSending(false);
@@ -373,6 +382,7 @@ export function Home() {
     setSendStatuses([]);
     setSending(false);
     stopRequested.current = false;
+    setCurrentDelay(0);
   };
 
   const VehicleMakeCell = ({ makes }: { makes: string[] }) => {
@@ -500,10 +510,19 @@ export function Home() {
       <ApiKeyModal isOpen={showApiKeyModal} onApiKeySet={() => setShowApiKeyModal(false)} onClose={() => setShowApiKeyModal(false)} />
       <Dialog open={showSendProgress} onOpenChange={open => { 
         if (!open) {
-          setShowSendProgress(false);
-          // If sending is complete and not in progress, reset to Stage 1
-          if (!sending && sendStatuses.length > 0) {
+          if (sending) {
+            if (confirm("Are you sure? All progress will be lost.")) {
+              handleStop();
+              resetToStage1();
+              setShowSendProgress(false);
+            }
+          } else if (sendStatuses.filter(c => c.status === 'sent').length === sendStatuses.length && sendStatuses.length > 0) {
+            // Completed - go to Stage 1
             resetToStage1();
+            setShowSendProgress(false);
+          } else {
+            // Not started - go to Stage 3
+            setShowSendProgress(false);
           }
         }
       }}>
@@ -511,6 +530,65 @@ export function Home() {
           <DialogHeader>
             <DialogTitle>Sending Messages Progress</DialogTitle>
           </DialogHeader>
+          
+          {/* Timing Configuration */}
+          <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+            <div className="mb-3">
+              <h4 className="text-sm font-medium">Timing Configuration</h4>
+              <p className="text-xs text-gray-500">Random delays (API-safe)</p>
+            </div>
+            
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-600">Minimum delay: {minDelay}s</label>
+                <Slider
+                  value={[minDelay]}
+                  onValueChange={(value) => {
+                    const newMin = value[0];
+                    setMinDelay(newMin);
+                    // If min is moving up and would overtake max, move max up to maintain 3-second gap
+                    if (newMin + 3 > maxDelay) {
+                      setMaxDelay(newMin + 3);
+                    }
+                  }}
+                  max={25}
+                  min={5}
+                  step={1}
+                  className="mt-1"
+                />
+              </div>
+              
+              <div>
+                <label className="text-xs text-gray-600">Maximum delay: {maxDelay}s</label>
+                <Slider
+                  value={[maxDelay]}
+                  onValueChange={(value) => {
+                    const newMax = value[0];
+                    setMaxDelay(newMax);
+                    // If max is moving down and would be overtaken by min, move min down to maintain 3-second gap
+                    if (newMax - 3 < minDelay) {
+                      setMinDelay(newMax - 3);
+                    }
+                  }}
+                  max={30}
+                  min={8}
+                  step={1}
+                  className="mt-1"
+                />
+              </div>
+              
+              <div className="text-xs text-gray-500">
+                Random delay: {minDelay}-{maxDelay} seconds between messages (API-safe)
+              </div>
+              
+              {sending && currentDelay > 0 && (
+                <div className="text-xs text-blue-600">
+                  Waiting {currentDelay} seconds before next message...
+                </div>
+              )}
+            </div>
+          </div>
+          
           <div className="mb-4">
             <Progress value={sendStatuses.filter(c => c.status === 'sent').length / (sendStatuses.length || 1) * 100} />
             <div className="text-sm mt-2">{sendStatuses.filter(c => c.status === 'sent').length} / {sendStatuses.length} sent</div>
@@ -532,17 +610,47 @@ export function Home() {
           </div>
           <div className="flex gap-2 justify-end">
             {sending ? (
-              <Button variant="destructive" onClick={handleStop}>STOP</Button>
+              <Button 
+                variant="destructive" 
+                onClick={() => {
+                  if (confirm("Are you sure you want to stop sending? Progress will be lost.")) {
+                    handleStop();
+                    resetToStage1();
+                    setShowSendProgress(false);
+                  }
+                }}
+              >
+                STOP
+              </Button>
+            ) : sendStatuses.filter(c => c.status === 'sent').length === sendStatuses.length && sendStatuses.length > 0 ? (
+              <div className="text-green-600 font-medium flex items-center gap-2">
+                <span>✓</span>
+                COMPLETE
+              </div>
             ) : (
               <Button onClick={startSending} disabled={sendStatuses.length === 0}>Start Sending</Button>
             )}
-            <Button variant="outline" onClick={() => {
-              setShowSendProgress(false);
-              // If sending is complete and not in progress, reset to Stage 1
-              if (!sending && sendStatuses.length > 0) {
-                resetToStage1();
-              }
-            }} disabled={sending}>Close</Button>
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                if (sending) {
+                  if (confirm("Are you sure? All progress will be lost.")) {
+                    handleStop();
+                    resetToStage1();
+                    setShowSendProgress(false);
+                  }
+                } else if (sendStatuses.filter(c => c.status === 'sent').length === sendStatuses.length && sendStatuses.length > 0) {
+                  // Completed - go to Stage 1
+                  resetToStage1();
+                  setShowSendProgress(false);
+                } else {
+                  // Not started - go to Stage 3
+                  setShowSendProgress(false);
+                }
+              }}
+            >
+              Close
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
