@@ -157,28 +157,70 @@ export function MessageComposer({
 
   setIsUploading(true);
   try {
+    // 1. Upload to Cloudinary
     const { urls } = await uploadImages(messageData.imageFiles);
+
+    // 2. Create gallery data package
+    const galleryData = {
+      images: urls,
+      message: messageData.messageTitle,
+      timestamp: Date.now()
+    };
+
+    // 3. Generate URL-safe encoded link
+    const galleryLink = createGalleryLink(galleryData);
     
-    // Directly use Cloudinary URLs instead of gallery URL
+    // 4. Store in localStorage as backup
+    localStorage.setItem(`gallery_${galleryData.timestamp}`, JSON.stringify(galleryData));
+
+    // 5. Update state with the single link
     onMessageDataChange({ 
-      uploadedImageUrls: urls 
+      uploadedImageUrls: [galleryLink],
+      // Clear the files after successful upload
     });
-    
+
     toast({
-      title: "Upload successful",
-      description: `Successfully uploaded ${urls.length} images`,
+      title: "Gallery ready!",
+      description: "All images are accessible via one link",
     });
+
   } catch (error) {
-    console.error('Upload error:', error);
+    console.error("Upload failed:", error);
     toast({
       title: "Upload failed",
-      description: error instanceof Error ? error.message : "Failed to upload images",
+      description: error instanceof Error ? error.message : "Could not create gallery",
       variant: "destructive",
     });
   } finally {
     setIsUploading(false);
   }
-}
+};
+
+// Helper function to create the gallery link
+const createGalleryLink = (data: {
+  images: string[];
+  message: string;
+  timestamp: number;
+}) => {
+  try {
+    // 1. Convert to JSON and compress if needed
+    const jsonData = JSON.stringify(data);
+    
+    // 2. Encode to base64
+    const base64Data = btoa(unescape(encodeURIComponent(jsonData)));
+    
+    // 3. Make URL-safe
+    const urlSafeData = base64Data
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    
+    return `${window.location.origin}/gallery/${urlSafeData}`;
+  } catch (error) {
+    console.error("Error creating gallery link:", error);
+    throw new Error("Failed to generate gallery link");
+  }
+};
 
   // Add smart placeholder logic for template
   function applySmartPlaceholderLogic(raw, data) {

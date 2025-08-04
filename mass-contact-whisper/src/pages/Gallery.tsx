@@ -1,13 +1,11 @@
 import { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface GalleryImage {
   url: string;
-  width: number;
-  height: number;
 }
 
 interface GalleryData {
@@ -17,6 +15,7 @@ interface GalleryData {
 
 export default function Gallery() {
   const { batchId } = useParams<{ batchId: string }>();
+  const navigate = useNavigate();
   const [data, setData] = useState<GalleryData | null>(null);
   const [selectedImage, setSelectedImage] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -29,38 +28,39 @@ export default function Gallery() {
       return;
     }
 
-    fetch(`/api/gallery/${batchId}`)
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Failed to load gallery');
-        }
-        return response.json();
-      })
-      .then(data => {
-        if (!data.images || data.images.length === 0) {
-          setError('No images found in this gallery');
-          setData({ images: [], message: data.message });
-        } else {
-          setData(data);
-        }
-      })
-      .catch(error => {
-        console.error('Gallery fetch error:', error);
-        setError(error instanceof Error ? error.message : 'Failed to load gallery');
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+    try {
+      // Decode the URL-safe base64 data
+      // 1. Restore URL-safe base64
+    const base64Data = batchId
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+    
+    // 2. Decode from base64
+    const jsonData = decodeURIComponent(escape(atob(base64Data)));
+    
+    // 3. Parse JSON
+    const galleryData = JSON.parse(jsonData);
+      
+      setData({
+      images: galleryData.images.map((url: string) => ({ url })),
+      message: galleryData.message || ''
+    });
+    } catch (err) {
+      setError('Invalid gallery link');
+      console.error('Decoding error:', err);
+    } finally {
+      setLoading(false);
+    }
   }, [batchId]);
 
   const handleKeyPress = (e: KeyboardEvent) => {
-    if (selectedImage === null) return;
+    if (selectedImage === null || !data) return;
 
     if (e.key === 'Escape') {
       setSelectedImage(null);
     } else if (e.key === 'ArrowLeft' && selectedImage > 0) {
       setSelectedImage(selectedImage - 1);
-    } else if (e.key === 'ArrowRight' && data && selectedImage < data.images.length - 1) {
+    } else if (e.key === 'ArrowRight' && selectedImage < data.images.length - 1) {
       setSelectedImage(selectedImage + 1);
     }
   };
@@ -78,17 +78,23 @@ export default function Gallery() {
     );
   }
 
-  if (error || !data || data.images.length === 0) {
+  if (error || !data?.images?.length) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Card className="p-6">
-          <h2 className="text-xl font-semibold mb-4">Error</h2>
+        <Card className="p-6 max-w-md">
+          <h2 className="text-xl font-semibold mb-4">Gallery Error</h2>
           <p className="text-red-500 mb-4">{error || 'No images found'}</p>
           {data?.message && (
             <div className="mt-4 p-4 bg-muted rounded-lg">
               <p className="whitespace-pre-wrap">{data.message}</p>
             </div>
           )}
+          <Button 
+            className="mt-4 w-full"
+            onClick={() => navigate('/')}
+          >
+            Return Home
+          </Button>
         </Card>
       </div>
     );
@@ -120,6 +126,7 @@ export default function Gallery() {
                 src={image.url}
                 alt={`Gallery image ${index + 1}`}
                 className="object-cover w-full h-full"
+                loading="lazy"
               />
             </div>
           ))}
@@ -127,16 +134,15 @@ export default function Gallery() {
       </div>
 
       {/* Lightbox */}
-      {selectedImage !== null && (
-        <div
-          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center"
-          onClick={() => setSelectedImage(null)}
-        >
-          <div className="relative w-full h-full flex items-center justify-center"
-               onClick={e => e.stopPropagation()}>
+      {selectedImage !== null && data && (
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center">
+          <div 
+            className="relative w-full h-full flex items-center justify-center"
+            onClick={() => setSelectedImage(null)}
+          >
             <img
               src={data.images[selectedImage].url}
-              alt={`Gallery image ${selectedImage + 1}`}
+              alt={`Selected image ${selectedImage + 1}`}
               className="max-h-[90vh] max-w-[90vw] object-contain"
             />
             
@@ -144,7 +150,10 @@ export default function Gallery() {
               variant="ghost"
               size="icon"
               className="absolute top-4 right-4 text-white hover:bg-white/20"
-              onClick={() => setSelectedImage(null)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedImage(null);
+              }}
             >
               <X className="h-6 w-6" />
             </Button>
@@ -185,4 +194,4 @@ export default function Gallery() {
       )}
     </div>
   );
-} 
+}

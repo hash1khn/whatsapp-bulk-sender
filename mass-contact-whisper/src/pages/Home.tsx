@@ -204,42 +204,25 @@ export function Home() {
   };
 
   const getFinalMessage = () => {
-  // Vehicle information section with fallbacks
-  let message = `> Part Request - ${messageData.make || 'Make not specified'} ${messageData.model || 'Model not specified'} ${messageData.year || 'Year not specified'}\n`;
-  message += `_VIN: ${messageData.vin || 'Not provided'}_\n\n`;
-  
-  // Parts section - handle empty case
-  if (messageData.parts.length > 0) {
-    messageData.parts.forEach(part => {
-      message += `* Qty: ${part.qty || '1'} - ${part.name}${part.number ? ` - ${part.number}` : ''}\n`;
-    });
-  } else {
-    message += "* No parts specified\n";
-  }
+  let message = `> Part Request - ${messageData.make} ${messageData.model} ${messageData.year}\n`;
+  message += `_VIN: ${messageData.vin || "Not provided"}_\n\n`;
 
-  // Additional details section
+  // Parts list
+  messageData.parts.forEach(part => {
+    message += `* Qty: ${part.qty} - ${part.name}${part.number ? ` - ${part.number}` : ''}\n`;
+  });
+
+  // Additional details
   if (messageData.additionalDetails.trim()) {
     message += `\n${messageData.additionalDetails.trim()}\n`;
-  } else {
-    message += '\nNo additional details provided\n';
   }
 
-  // Image section - handle multiple images
+  // SINGLE GALLERY LINK (only if images exist)
   if (messageData.uploadedImageUrls.length > 0) {
-    message += '\nPHOTOS:\n';
-    message += messageData.uploadedImageUrls
-      .map((url, index) => `${index + 1}. ${url}`)
-      .join('\n');
+    message += `\nView all photos here: ${messageData.uploadedImageUrls[0]}`;
   }
 
-  // Clean up any excessive newlines while preserving structure
-  return message
-    .split('\n')
-    .filter((line, i, arr) => 
-      line.trim() !== '' || 
-      (i > 0 && arr[i-1].trim() !== '')
-    )
-    .join('\n');
+  return message;
 };
 
   // Add smart placeholder logic for template (duplicate from MessageComposer)
