@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
-import { Send, Upload, X, MessageSquare, Eye, Plus, Trash2, ArrowRight } from 'lucide-react';
+import { Send, Upload, X, MessageSquare, Plus, Trash2, ArrowRight } from 'lucide-react';
 import { generateId } from '@/lib/utils';
 import { ChatStorageService } from '@/lib/chatStorage';
 import { uploadImages } from '@/lib/cloudinary';
@@ -53,7 +53,7 @@ export function MessageComposer({
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [sendProgress, setSendProgress] = useState(0);
-  const [showPreview, setShowPreview] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
@@ -245,7 +245,7 @@ export function MessageComposer({
 
   const getFinalMessage = () => {
     // Try to load template from localStorage
-    const template = localStorage.getItem('massContactTemplate') || `> Part Request - [MAKE] [MODEL] [YEAR]\n_VIN: [VIN]_\n\n[QTY] - [PART NAME] - [PART NUMBER]\n[QTY] - [PART NAME] - [PART NUMBER]\n\n[DETAILS]\n\nPhotos Here:\n[GALLERY]`;
+    const template = localStorage.getItem('massContactTemplate') || `> Part Request - [MAKE] [MODEL] [YEAR]\n_VIN: [VIN]_\n\n* Qty: [QTY] - [PART NAME] - [PART NUMBER]\n* Qty: [QTY] - [PART NAME] - [PART NUMBER]\n\n[DETAILS]\n\nPhotos Here:\n[GALLERY]`;
     // Build data object for placeholders
     const data = {
       MAKE: messageData.make,
@@ -267,12 +267,14 @@ export function MessageComposer({
       // Replace the first [QTY] - [PART NAME] - [PART NUMBER] line with all parts
       msg = msg.replace(/\*?\s*\[QTY\].*\[PART NAME\].*\[PART NUMBER\].*/g, () =>
         messageData.parts.map(part =>
-          `* ${part.qty} - ${part.name}${part.number ? ' - ' + part.number : ''}`
+          `* Qty: ${part.qty} - ${part.name}${part.number ? ' - ' + part.number : ''}`
         ).join('\n')
       );
     }
     return applySmartPlaceholderLogic(msg, data);
   };
+
+
 
   const sendToAll = async () => {
     if (!isFormValid()) {
@@ -649,16 +651,8 @@ export function MessageComposer({
           </div>
         </div>
 
-        {/* Preview and Next Stage Buttons */}
-        <div className="flex justify-end items-center gap-4 pt-4">
-          <Button
-            variant="outline"
-            onClick={() => setShowPreview(!showPreview)}
-            disabled={!isFormValid()}
-          >
-            <Eye className="h-4 w-4 mr-2" />
-            {showPreview ? 'Hide Preview' : 'Show Preview'}
-          </Button>
+        {/* Next Stage Button */}
+        <div className="flex justify-end items-center pt-4">
           <Button
             onClick={onNextStage}
             disabled={!isFormValid() || isUploading}
@@ -668,16 +662,6 @@ export function MessageComposer({
             Continue to Preview
           </Button>
         </div>
-
-        {showPreview && (
-          <Card className="mt-4">
-            <CardContent className="p-4">
-              <pre className="whitespace-pre-wrap font-mono text-sm">
-                {getFinalMessage()}
-              </pre>
-            </CardContent>
-          </Card>
-        )}
 
         {isSending && (
           <Progress value={sendProgress} className="w-full" />

@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { Filter, Users, MessageSquare, ArrowRight, MessageCircle, Trash2, ChevronRight, ChevronLeft, Send, ChevronDown } from 'lucide-react';
+import { Filter, Users, MessageSquare, ArrowRight, MessageCircle, Trash2, ChevronRight, ChevronLeft, Send, ChevronDown, Edit } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { MessageComposer } from '@/components/MessageComposer';
 import { useNavigate } from 'react-router-dom';
@@ -17,8 +17,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { StagedContactsTable } from '@/components/StagedContactsTable';
 import { ApiKeyModal } from '@/components/ApiKeyModal';
 import { sendMessage, createTextMessage } from '@/api/wassender';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
+import { Textarea } from '@/components/ui/textarea';
 
 // Define interfaces for message data
 interface Part {
@@ -72,6 +73,9 @@ export function Home() {
   const [sendStatuses, setSendStatuses] = useState([]);
   const [sending, setSending] = useState(false);
   const stopRequested = useRef(false);
+  const [editableMessage, setEditableMessage] = useState('');
+  const [showEditMessageModal, setShowEditMessageModal] = useState(false);
+  const [finalMessageText, setFinalMessageText] = useState('');
 
   // Apply filters whenever filters or contacts change
   useEffect(() => {
@@ -178,6 +182,10 @@ export function Home() {
         return;
       }
       setCurrentStep(prev => prev + 1);
+      // When entering Stage 3, populate the final message text
+      if (currentStep === 2) {
+        setFinalMessageText(getFinalMessage());
+      }
     }
   };
 
@@ -195,9 +203,9 @@ export function Home() {
     let message = `> Part Request - ${messageData.make} ${messageData.model} ${messageData.year}\n`;
     message += `_VIN: ${messageData.vin}_\n\n`;
     
-    // Add parts
+    // Add parts with bullet points
     messageData.parts.forEach(part => {
-      message += `${part.qty} - ${part.name}${part.number ? ` - ${part.number}` : ''}\n`;
+      message += `* Qty: ${part.qty} - ${part.name}${part.number ? ` - ${part.number}` : ''}\n`;
     });
 
     // Add additional details if present
@@ -276,6 +284,45 @@ export function Home() {
     errorMsg: '',
   }));
 
+  // Function to render WhatsApp formatting
+  const renderWhatsAppFormatting = (text: string) => {
+    if (!text) return '';
+    
+    // Split into lines to handle bullet points and quotes
+    const lines = text.split('\n');
+    const formattedLines = lines.map(line => {
+      let formattedLine = line;
+      
+      // Handle quotes (lines starting with >)
+      if (line.trim().startsWith('>')) {
+        const content = line.trim().substring(1).trim();
+        formattedLine = `<div class="border-l-4 border-current border-opacity-30 pl-3 opacity-80">${content}</div>`;
+      }
+      
+      // Handle bullet points (lines starting with - or * at the beginning)
+      if (line.trim().startsWith('-') || line.trim().startsWith('*')) {
+        const content = line.trim().substring(1).trim();
+        formattedLine = `<span class="inline-block w-1.5 h-1.5 bg-current rounded-full mr-2 opacity-70"></span>${content}`;
+      }
+      
+      // Handle bold: *text* (but not if it's part of a bullet point)
+      formattedLine = formattedLine.replace(/\*(.*?)\*/g, '<strong>$1</strong>');
+      
+      // Handle italic: _text_
+      formattedLine = formattedLine.replace(/_(.*?)_/g, '<em>$1</em>');
+      
+      // Handle strikethrough: ~text~
+      formattedLine = formattedLine.replace(/~(.*?)~/g, '<del>$1</del>');
+      
+      // Handle monospace: ```text```
+      formattedLine = formattedLine.replace(/```(.*?)```/g, '<code class="bg-black bg-opacity-20 px-1 rounded text-xs">$1</code>');
+      
+      return formattedLine;
+    });
+    
+    return formattedLines.join('<br>');
+  };
+
   // Send logic for modal
   const startSending = async () => {
     setSending(true);
@@ -289,7 +336,7 @@ export function Home() {
       }
       setSendStatuses(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'sending' } : c));
       try {
-        await sendMessage(createTextMessage(contacts[i].number, getFinalMessage()));
+        await sendMessage(createTextMessage(contacts[i].number, finalMessageText));
         setSendStatuses(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'sent' } : c));
       } catch (error) {
         setSendStatuses(prev => prev.map((c, idx) => idx === i ? { ...c, status: 'error', errorMsg: error?.message || 'Error' } : c));
@@ -304,6 +351,28 @@ export function Home() {
   const handleStop = () => {
     stopRequested.current = true;
     setSending(false);
+  };
+
+  // Function to reset everything and go back to Stage 1
+  const resetToStage1 = () => {
+    setCurrentStep(1);
+    setSelectedContacts(new Set());
+    setMessageData({
+      messageTitle: '',
+      make: '',
+      model: '',
+      year: '',
+      vin: '',
+      additionalDetails: '',
+      parts: [],
+      imageFiles: [],
+      imagePreviews: [],
+      uploadedImageUrls: []
+    });
+    setFinalMessageText('');
+    setSendStatuses([]);
+    setSending(false);
+    stopRequested.current = false;
   };
 
   const VehicleMakeCell = ({ makes }: { makes: string[] }) => {
@@ -429,7 +498,15 @@ export function Home() {
   return (
     <div className="min-h-screen bg-background">
       <ApiKeyModal isOpen={showApiKeyModal} onApiKeySet={() => setShowApiKeyModal(false)} onClose={() => setShowApiKeyModal(false)} />
-      <Dialog open={showSendProgress} onOpenChange={open => { if (!open) setShowSendProgress(false); }}>
+      <Dialog open={showSendProgress} onOpenChange={open => { 
+        if (!open) {
+          setShowSendProgress(false);
+          // If sending is complete and not in progress, reset to Stage 1
+          if (!sending && sendStatuses.length > 0) {
+            resetToStage1();
+          }
+        }
+      }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Sending Messages Progress</DialogTitle>
@@ -459,10 +536,57 @@ export function Home() {
             ) : (
               <Button onClick={startSending} disabled={sendStatuses.length === 0}>Start Sending</Button>
             )}
-            <Button variant="outline" onClick={() => setShowSendProgress(false)} disabled={sending}>Close</Button>
+            <Button variant="outline" onClick={() => {
+              setShowSendProgress(false);
+              // If sending is complete and not in progress, reset to Stage 1
+              if (!sending && sendStatuses.length > 0) {
+                resetToStage1();
+              }
+            }} disabled={sending}>Close</Button>
           </div>
         </DialogContent>
       </Dialog>
+             <Dialog open={showEditMessageModal} onOpenChange={setShowEditMessageModal}>
+         <DialogContent className="max-w-2xl">
+           <DialogHeader>
+             <DialogTitle>Edit Final Message</DialogTitle>
+           </DialogHeader>
+           <div className="space-y-4">
+             <div className="flex items-center justify-between">
+               <Label htmlFor="editableMessage">Message Text</Label>
+               <div className="text-xs text-gray-500">
+                 Formatting: *bold* _italic_ ~strikethrough~ ```monospace``` - bullet points &gt; quotes
+               </div>
+             </div>
+             <Textarea
+               id="editableMessage"
+               value={editableMessage}
+               onChange={(e) => setEditableMessage(e.target.value)}
+               className="min-h-[400px] font-mono text-sm"
+               placeholder="Edit your message here...
+
+You can use WhatsApp formatting:
+*Bold text* with asterisks
+_Italic text_ with underscores
+~Strikethrough text~ with tildes
+```Monospace text``` with backticks
+- Bullet points with dashes or asterisks
+&gt; Quote text with greater than symbol"
+             />
+           </div>
+           <DialogFooter>
+             <Button variant="outline" onClick={() => setShowEditMessageModal(false)}>Cancel</Button>
+             <Button onClick={() => {
+               setFinalMessageText(editableMessage);
+               setShowEditMessageModal(false);
+               toast({
+                 title: "Message Updated",
+                 description: "Your message has been updated.",
+               });
+             }}>Save Changes</Button>
+           </DialogFooter>
+         </DialogContent>
+       </Dialog>
       <div className="container mx-auto p-6 space-y-6">
         {/* Header */}
         <Card>
@@ -676,71 +800,44 @@ export function Home() {
             <CardContent className="space-y-6">
               {/* WhatsApp Message Preview */}
               <div className="space-y-4">
-                <h3 className="text-lg font-medium">WhatsApp Message Preview</h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-medium">WhatsApp Message Preview</h3>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setEditableMessage(finalMessageText);
+                      setShowEditMessageModal(true);
+                    }}
+                    className="flex items-center gap-2"
+                  >
+                    <Edit className="h-4 w-4" />
+                    Edit Message
+                  </Button>
+                </div>
                 <div className="relative bg-[#efeae2] rounded-lg p-4 min-h-[400px] flex flex-col justify-end" style={{
                   backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23d1d5db' fill-opacity='0.1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`
                 }}>
                   <div className="flex justify-end mb-4">
                     <div className="max-w-[85%] bg-green-500 text-white rounded-lg p-3 shadow-sm relative text-left">
-                    {/* Message Content */}
-                    <div className="space-y-2">
-                      {/* Header with vehicle info */}
-                      <div className="border-l-4 border-white pl-2">
-                        <div className="font-medium text-sm">
-                          Part Request - {messageData.make} {messageData.model} {messageData.year}
+                      <div 
+                        className="text-sm font-sans leading-relaxed"
+                        dangerouslySetInnerHTML={{ __html: renderWhatsAppFormatting(finalMessageText) }}
+                      />
+                      
+                      {/* WhatsApp Message Metadata */}
+                      <div className="flex items-center justify-end gap-1 mt-2 text-xs opacity-70">
+                        <span>19:19</span>
+                        <div className="flex items-center">
+                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/>
+                          </svg>
+                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/>
+                          </svg>
                         </div>
-                      </div>
-                      
-                      {/* VIN */}
-                      <div className="text-sm opacity-90">
-                        <em>VIN: {messageData.vin || 'Not provided'}</em>
-                      </div>
-                      
-                      {/* Parts List */}
-                      <div className="space-y-1">
-                        {messageData.parts.map((part, index) => (
-                          <div key={index} className="text-sm">
-                            {part.qty} - {part.name}{part.number ? ` - ${part.number}` : ''}
-                          </div>
-                        ))}
-                      </div>
-                      
-                      {/* Additional Details */}
-                      {messageData.additionalDetails.trim() && (
-                        <div className="text-sm pt-2 border-t border-white border-opacity-20">
-                          {messageData.additionalDetails.trim()}
-                        </div>
-                      )}
-                      
-                      {/* Images Section */}
-                      {messageData.uploadedImageUrls.length > 0 && (
-                        <div className="pt-2 border-t border-white border-opacity-20">
-                          <div className="text-sm mb-2">PHOTOS HERE:</div>
-                          <div className="space-y-1">
-                            {messageData.uploadedImageUrls.map((url, index) => (
-                              <div key={index} className="text-xs break-all">
-                                Reference {index + 1}: {url}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    
-                    {/* WhatsApp Message Metadata */}
-                    <div className="flex items-center justify-end gap-1 mt-2 text-xs opacity-70">
-                      <span>19:19</span>
-                      <div className="flex items-center">
-                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/>
-                        </svg>
-                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/>
-                        </svg>
                       </div>
                     </div>
                   </div>
-                </div>
                 </div>
               </div>
 
