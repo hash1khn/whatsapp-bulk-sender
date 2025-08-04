@@ -146,48 +146,39 @@ export function MessageComposer({
   };
 
   const uploadSelectedImages = async () => {
-    if (messageData.imageFiles.length === 0) {
-      toast({
-        title: "No images selected",
-        description: "Please select images to upload first",
-        variant: "destructive",
-      });
-      return;
-    }
+  if (messageData.imageFiles.length === 0) {
+    toast({
+      title: "No images selected",
+      description: "Please select images to upload first",
+      variant: "destructive",
+    });
+    return;
+  }
 
-    setIsUploading(true);
-    try {
-      const result = await uploadImages(messageData.imageFiles);
-      
-      // Store the message text
-      if (messageData.messageTitle.trim()) {
-        await fetch(`/api/gallery/${result.timestamp}/message`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ message: messageData.messageTitle.trim() })
-        });
-      }
-
-      const galleryUrl = `${window.location.origin}/gallery/${result.timestamp}`;
-      onMessageDataChange({ uploadedImageUrls: [galleryUrl] });
-      
-      toast({
-        title: "Upload successful",
-        description: `Successfully uploaded ${result.urls.length} images to gallery`,
-      });
-    } catch (error) {
-      console.error('Upload error:', error);
-      toast({
-        title: "Upload failed",
-        description: error instanceof Error ? error.message : "Failed to upload images. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsUploading(false);
-    }
-  };
+  setIsUploading(true);
+  try {
+    const { urls } = await uploadImages(messageData.imageFiles);
+    
+    // Directly use Cloudinary URLs instead of gallery URL
+    onMessageDataChange({ 
+      uploadedImageUrls: urls 
+    });
+    
+    toast({
+      title: "Upload successful",
+      description: `Successfully uploaded ${urls.length} images`,
+    });
+  } catch (error) {
+    console.error('Upload error:', error);
+    toast({
+      title: "Upload failed",
+      description: error instanceof Error ? error.message : "Failed to upload images",
+      variant: "destructive",
+    });
+  } finally {
+    setIsUploading(false);
+  }
+}
 
   // Add smart placeholder logic for template
   function applySmartPlaceholderLogic(raw, data) {
@@ -256,7 +247,7 @@ export function MessageComposer({
       'PART NAME': messageData.parts[0]?.name || '',
       'PART NUMBER': messageData.parts[0]?.number || '',
       DETAILS: messageData.additionalDetails,
-      GALLERY: messageData.uploadedImageUrls?.[0] || '',
+      GALLERY: messageData.uploadedImageUrls.join('\n'), // Use all image URLs
       gallery: messageData.uploadedImageUrls?.[0] || '',
       partNumber: messageData.parts[0]?.number || '',
       additionalDetails: messageData.additionalDetails,

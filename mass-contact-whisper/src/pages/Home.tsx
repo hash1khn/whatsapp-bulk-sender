@@ -204,26 +204,43 @@ export function Home() {
   };
 
   const getFinalMessage = () => {
-    let message = `> Part Request - ${messageData.make} ${messageData.model} ${messageData.year}\n`;
-    message += `_VIN: ${messageData.vin}_\n\n`;
-    
-    // Add parts with bullet points
+  // Vehicle information section with fallbacks
+  let message = `> Part Request - ${messageData.make || 'Make not specified'} ${messageData.model || 'Model not specified'} ${messageData.year || 'Year not specified'}\n`;
+  message += `_VIN: ${messageData.vin || 'Not provided'}_\n\n`;
+  
+  // Parts section - handle empty case
+  if (messageData.parts.length > 0) {
     messageData.parts.forEach(part => {
-      message += `* Qty: ${part.qty} - ${part.name}${part.number ? ` - ${part.number}` : ''}\n`;
+      message += `* Qty: ${part.qty || '1'} - ${part.name}${part.number ? ` - ${part.number}` : ''}\n`;
     });
+  } else {
+    message += "* No parts specified\n";
+  }
 
-    // Add additional details if present
-    if (messageData.additionalDetails.trim()) {
-      message += `\n${messageData.additionalDetails.trim()}\n`;
-    }
+  // Additional details section
+  if (messageData.additionalDetails.trim()) {
+    message += `\n${messageData.additionalDetails.trim()}\n`;
+  } else {
+    message += '\nNo additional details provided\n';
+  }
 
-    if (messageData.uploadedImageUrls.length > 0) {
-      message += '\nPHOTOS HERE:\n';
-      message += messageData.uploadedImageUrls[0];
-    }
+  // Image section - handle multiple images
+  if (messageData.uploadedImageUrls.length > 0) {
+    message += '\nPHOTOS:\n';
+    message += messageData.uploadedImageUrls
+      .map((url, index) => `${index + 1}. ${url}`)
+      .join('\n');
+  }
 
-    return message;
-  };
+  // Clean up any excessive newlines while preserving structure
+  return message
+    .split('\n')
+    .filter((line, i, arr) => 
+      line.trim() !== '' || 
+      (i > 0 && arr[i-1].trim() !== '')
+    )
+    .join('\n');
+};
 
   // Add smart placeholder logic for template (duplicate from MessageComposer)
   function applySmartPlaceholderLogic(raw, data) {
