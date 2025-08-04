@@ -103,8 +103,19 @@ const Chat: React.FC = () => {
         return messageFrom === phoneNumber || messageTo === phoneNumber
       })
 
-      // Remove duplicates and sort
+      // Remove duplicates more effectively
       const uniqueMessages = conversationMessages.reduce((acc, message) => {
+        // Skip temporary messages if we have a real message with similar content
+        if (message.id.startsWith("temp-")) {
+          const hasRealMessage = acc.some(
+            (m) =>
+              !m.id.startsWith("temp-") &&
+              m.body === message.body &&
+              Math.abs(new Date(m.timestamp).getTime() - new Date(message.timestamp).getTime()) < 5000,
+          )
+          if (hasRealMessage) return acc
+        }
+
         const isDuplicate = acc.some((m) => m.id === message.id)
         if (!isDuplicate) {
           acc.push(message)
